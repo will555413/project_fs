@@ -1,0 +1,20 @@
+1. write a function to convert from logical sector to physical sector
+2. write a function to grow a file when writting past EOF
+
+
+inode.c
+	inode_close()
+		+ needs to be able to deallocate non-sequential blocks
+	inode_read()
+		+ like inode_close(), has to read non-sequential blocks
+	inode_write()
+		+ needs to grow file if writes up to EOF and past
+		+ needs to grow file if write starts past EOF
+		+ growth should be atomic
+		+ change 
+
+directory.c
+	struct dir
+		+ add a semephore?
+	dir_create()
+		+ add '.' and '..' entries here? or in mkdir?

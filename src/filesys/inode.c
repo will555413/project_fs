@@ -7,18 +7,28 @@
 #include "filesys/free-map.h"
 #include "threads/malloc.h"
 
-/* Identifies an inode. */
-#define INODE_MAGIC 0x494e4f44
+#define INDEX_BLOCK_ENTRIES 128
 
 /* On-disk inode.
    Must be exactly BLOCK_SECTOR_SIZE bytes long. */
 struct inode_disk
   {
-    block_sector_t start;               /* First data sector. */
+    block_sector_t data_sectors[125];   /* Data sectors */
+    block_sector_t index_1;             /* Sector number of indirect index */
+    block_sector_t index_2;             /* Sector number of doubly indirect index */
     off_t length;                       /* File size in bytes. */
-    unsigned magic;                     /* Magic number. */
-    uint32_t unused[125];               /* Not used. */
   };
+
+/* On-disk index, should probably be BLOCK_SECTOR_SIZE bytes long. */
+struct index_block
+{
+  block_sector_t sectors[128];          /* Array of sectors */
+};
+
+int debug_fs = 1;
+int verbose_fs = 1;
+
+static block_sector_t logical_to_physical_idx(struct inode *inode, block_sector_t logical_idx);
 
 /* Returns the number of sectors to allocate for an inode SIZE
    bytes long. */
@@ -39,6 +49,71 @@ struct inode
     struct inode_disk data;             /* Inode content. */
   };
 
+static block_sector_t logical_to_physical_idx(struct inode *inode, block_sector_t logical_idx)
+{
+  struct index_block *idx_buf;
+  /* sectors 0 to 124 are pointed to directly */
+  if (logical_idx < 125)
+  {
+    return inode->data.data_sectors[logical_idx];
+  }
+
+  /* 'advance' our logical_idx so that we are now 
+      at the first index of this level of indirection */
+  logical_idx -= 125;
+  /* sectors 125 to 252 are pointed to indirectly */
+  if (logical_idx < 128)
+  {
+    block_sector_t idx1 = inode->data.index_1;
+    if (idx1 == NULL) 
+      return NULL;
+
+    /* read disk at sector idx1 into a temporary buffer */
+    idx_buf = malloc(sizeof(struct index_block));
+    block_read(fs_device, idx1, idx_buf);
+    block_sector_t physical_sector = idx_buf->sectors[logical_idx];
+    
+    /* cleanup and return */
+    free(idx_buf);
+    return physical_sector;
+  }
+
+  /* 'advance' our logical_idx again */
+  logical_idx -= 128;
+  /* sectors 253 to 16383 are at two levels of indirection.
+      We don't point above 16383 because that would exceed 8 MB */
+  if (logical_idx < 16384)
+  {
+    block_sector_t idx2 = inode->data.index_2;
+    if (idx2 == NULL)
+      return NULL;
+
+    block_sector_t idx1 = logical_idx / INDEX_BLOCK_ENTRIES;
+    int idx_offset = logical_idx % INDEX_BLOCK_ENTRIES;
+
+    /* read disk at sector idx2 into a temporary buffer */
+    idx_buf = malloc(sizeof(struct index_block));
+    block_read(fs_device, idx2, idx_buf);
+
+    /* get physical sector of next index_block then read from that to the buffer */
+    block_sector_t physical_idx1_sector = idx_buf->sectors[idx1];
+    if (physical_idx1_sector ==  NULL)
+      return NULL;
+
+    block_read(fs_device, physical_idx1_sector, idx_buf);
+    block_sector_t physical_sector = idx_buf->sectors[idx_offset];
+
+    /* cleanup and return */
+    free(idx_buf);
+    return physical_sector;
+  }
+
+  else
+    PANIC("Bad logical sector provided, must be between 0 and 16383.");
+
+  return NULL; /* Shouldn't be reached */
+}
+
 /* Returns the block device sector that contains byte offset POS
    within INODE.
    Returns -1 if INODE does not contain data for a byte at offset
@@ -48,7 +123,7 @@ byte_to_sector (const struct inode *inode, off_t pos)
 {
   ASSERT (inode != NULL);
   if (pos < inode->data.length)
-    return inode->data.start + pos / BLOCK_SECTOR_SIZE;
+    return inode->data.data_sectors[0] + pos / BLOCK_SECTOR_SIZE;
   else
     return -1;
 }
@@ -86,8 +161,8 @@ inode_create (block_sector_t sector, off_t length)
     {
       size_t sectors = bytes_to_sectors (length);
       disk_inode->length = length;
-      disk_inode->magic = INODE_MAGIC;
-      if (free_map_allocate (sectors, &disk_inode->start)) 
+      //disk_inode->magic = INODE_MAGIC;
+      if (free_map_allocate (sectors, &disk_inode->data_sectors[0])) 
         {
           block_write (fs_device, sector, disk_inode);
           if (sectors > 0) 
@@ -96,7 +171,7 @@ inode_create (block_sector_t sector, off_t length)
               size_t i;
               
               for (i = 0; i < sectors; i++) 
-                block_write (fs_device, disk_inode->start + i, zeros);
+                block_write (fs_device, disk_inode->data_sectors[0] + i, zeros);
             }
           success = true; 
         } 
@@ -177,7 +252,7 @@ inode_close (struct inode *inode)
       if (inode->removed) 
         {
           free_map_release (inode->sector, 1);
-          free_map_release (inode->data.start,
+          free_map_release (inode->data.data_sectors[0],
                             bytes_to_sectors (inode->data.length)); 
         }
 
@@ -208,6 +283,8 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
     {
       /* Disk sector to read, starting byte offset within sector. */
       block_sector_t sector_idx = byte_to_sector (inode, offset);
+      /* PUT CONVERSION FROM LOGICAL IDX TO ACTUAL IDX HERE */
+
       int sector_ofs = offset % BLOCK_SECTOR_SIZE;
 
       /* Bytes left in inode, bytes left in sector, lesser of the two. */
@@ -262,6 +339,12 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
   off_t bytes_written = 0;
   uint8_t *bounce = NULL;
 
+  if (debug_fs) printf("inode_write_at(): inode_number = %d, file_length = %d\n", inode->sector, inode->data.length);
+  if (debug_fs) printf("inode_write_at(): write_size = %d, offset = %d\n", size, offset);
+
+  int writing_past_eof = (inode->data.length < offset + size);
+  int starting_after_eof = (inode->data.length < offset);
+
   if (inode->deny_write_cnt)
     return 0;
 
@@ -269,6 +352,9 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
     {
       /* Sector to write, starting byte offset within sector. */
       block_sector_t sector_idx = byte_to_sector (inode, offset);
+
+      /* PUT CONVERSION FROM LOGICAL IDX TO ACTUAL IDX HERE */
+
       int sector_ofs = offset % BLOCK_SECTOR_SIZE;
 
       /* Bytes left in inode, bytes left in sector, lesser of the two. */
