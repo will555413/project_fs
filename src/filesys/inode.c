@@ -364,7 +364,7 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
 
   int writing_past_eof = (inode->data.length < offset + size);
   int starting_after_eof = (inode->data.length < offset);
-  block_sector_t *sector_pointer;
+  block_sector_t *sector_pointer = NULL;
 
   if (inode->deny_write_cnt)
     return 0;
@@ -378,7 +378,7 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
       if (sector_idx > 124)
         PANIC("TEMPORARY - ONLY GROWING UP TO 125 SECTORS FOR NOW");
       /* TEMPORARY */
-      if (inode->data.data_sectors[sector_idx] == -1)
+      if (inode->data.data_sectors[sector_idx] == -1 && inode->sector != 0)
       {
         free_map_allocate(1, sector_pointer);
         inode->data.data_sectors[sector_idx] = sector_pointer;
