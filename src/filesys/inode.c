@@ -161,6 +161,17 @@ inode_create (block_sector_t sector, off_t length)
   disk_inode = calloc (1, sizeof *disk_inode);
   if (disk_inode != NULL)
     {
+
+      /* Initiate data_sectors array and indirect block addresses */
+      block_sector_t s;
+      for (s = 0; s < 125; s++)
+        disk_inode->data_sectors[s] = -1;
+      disk_inode->index_1 = -1;
+      disk_inode->index_2 = -1;
+
+
+
+
       size_t sectors = bytes_to_sectors (length);
       disk_inode->length = length;
       //disk_inode->magic = INODE_MAGIC;
@@ -172,8 +183,11 @@ inode_create (block_sector_t sector, off_t length)
               static char zeros[BLOCK_SECTOR_SIZE];
               size_t i;
               
-              for (i = 0; i < sectors; i++) 
-                block_write (fs_device, disk_inode->data_sectors[0] + i, zeros);
+              for (i = 0; i < sectors; i++)
+              {
+                block_write (fs_device, disk_inode->data_sectors[i], zeros);
+                disk_inode->data_sectors[i] = disk_inode->data_sectors[0] + i;
+              }
             }
           success = true; 
         } 
@@ -350,6 +364,7 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
 
   int writing_past_eof = (inode->data.length < offset + size);
   int starting_after_eof = (inode->data.length < offset);
+  //block_sector_t *sector_pointer;
 
   if (inode->deny_write_cnt)
     return 0;
@@ -358,6 +373,15 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
     {
       /* Sector to write, starting byte offset within sector. */
       block_sector_t sector_idx = byte_to_sector (inode, offset);
+
+      /* TEMPORARY */
+      if (sector_idx > 124)
+        PANIC("TEMPORARY - ONLY GROWING UP TO 125 SECTORS FOR NOW");
+      /* TEMPORARY */
+      if (inode->data.data_sectors[sector_idx] == -1)
+        free_map_allocate(1, &inode->data.data_sectors[sector_idx]);
+
+      block_sector_t logical_idx = inode->data.data_sectors[sector_idx];
 
       /* PUT CONVERSION FROM LOGICAL IDX TO ACTUAL IDX HERE */
 
@@ -392,11 +416,11 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
              we're writing, then we need to read in the sector
              first.  Otherwise we start with a sector of all zeros. */
           if (sector_ofs > 0 || chunk_size < sector_left) 
-            block_read (fs_device, sector_idx, bounce);
+            block_read (fs_device, logical_idx, bounce);
           else
             memset (bounce, 0, BLOCK_SECTOR_SIZE);
           memcpy (bounce + sector_ofs, buffer + bytes_written, chunk_size);
-          block_write (fs_device, sector_idx, bounce);
+          block_write (fs_device, logical_idx, bounce);
         }
 
       /* Advance. */
