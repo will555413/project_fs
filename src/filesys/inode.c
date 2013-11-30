@@ -25,8 +25,8 @@ struct index_block
   block_sector_t sectors[128];          /* Array of sectors */
 };
 
-static int debug_fs = 1;
-static int verbose_fs = 1;
+static int debug_fs = 0;
+static int verbose_fs = 0;
 
 static block_sector_t logical_to_physical_idx(struct inode *inode, block_sector_t logical_idx);
 
