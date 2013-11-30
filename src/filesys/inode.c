@@ -185,8 +185,8 @@ inode_create (block_sector_t sector, off_t length)
               
               for (i = 0; i < sectors; i++)
               {
-                block_write (fs_device, disk_inode->data_sectors[i], zeros);
                 disk_inode->data_sectors[i] = disk_inode->data_sectors[0] + i;
+                block_write (fs_device, disk_inode->data_sectors[i], zeros);
               }
             }
           success = true; 
