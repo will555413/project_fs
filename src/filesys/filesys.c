@@ -7,6 +7,9 @@
 #include "filesys/inode.h"
 #include "filesys/directory.h"
 
+
+static int verbose_fs = 1;
+
 /* Partition that contains the file system. */
 struct block *fs_device;
 

@@ -25,8 +25,8 @@ struct index_block
   block_sector_t sectors[128];          /* Array of sectors */
 };
 
-int debug_fs = 1;
-int verbose_fs = 1;
+static int debug_fs = 1;
+static int verbose_fs = 1;
 
 static block_sector_t logical_to_physical_idx(struct inode *inode, block_sector_t logical_idx);
 
@@ -42,7 +42,7 @@ bytes_to_sectors (off_t size)
 struct inode 
   {
     struct list_elem elem;              /* Element in inode list. */
-    block_sector_t sector;              /* Sector number of disk location. */
+    block_sector_t sector;              /* Disk location represented by sector number. */
     int open_cnt;                       /* Number of openers. */
     bool removed;                       /* True if deleted, false otherwise. */
     int deny_write_cnt;                 /* 0: writes ok, >0: deny writes. */
@@ -136,6 +136,7 @@ static struct list open_inodes;
 void
 inode_init (void) 
 {
+  if (verbose_fs) printf("inode_init()\n");
   list_init (&open_inodes);
 }
 
@@ -147,6 +148,7 @@ inode_init (void)
 bool
 inode_create (block_sector_t sector, off_t length)
 {
+  if (verbose_fs) printf("inode_create(): inumber = %d, length = %d\n", sector, length);
   struct inode_disk *disk_inode = NULL;
   bool success = false;
 
@@ -186,6 +188,7 @@ inode_create (block_sector_t sector, off_t length)
 struct inode *
 inode_open (block_sector_t sector)
 {
+  if (verbose_fs) printf("inode_open(): inumber = %d\n", sector);
   struct list_elem *e;
   struct inode *inode;
 
@@ -275,6 +278,9 @@ inode_remove (struct inode *inode)
 off_t
 inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset) 
 {
+  if (verbose_fs) printf("inode_read_at(): inode_number = %d, file_length = %d\n", inode->sector, inode->data.length);
+  if (verbose_fs) printf("inode_read_at(): read_size = %d, offset = %d\n", size, offset);
+
   uint8_t *buffer = buffer_;
   off_t bytes_read = 0;
   uint8_t *bounce = NULL;

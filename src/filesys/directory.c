@@ -6,6 +6,8 @@
 #include "filesys/inode.h"
 #include "threads/malloc.h"
 
+static int verbose_fs = 1;
+
 /* A directory. */
 struct dir 
   {

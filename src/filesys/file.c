@@ -3,6 +3,8 @@
 #include "filesys/inode.h"
 #include "threads/malloc.h"
 
+static int verbose_fs = 1;
+
 /* An open file. */
 struct file 
   {
