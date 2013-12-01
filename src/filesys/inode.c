@@ -6,6 +6,7 @@
 #include "filesys/filesys.h"
 #include "filesys/free-map.h"
 #include "threads/malloc.h"
+#include "threads/synch.h"
 
 #define INDEX_BLOCK_ENTRIES 128
 
@@ -25,10 +26,13 @@ struct index_block
   block_sector_t sectors[128];          /* Array of sectors */
 };
 
-static int debug_fs = 0;
+static int debug_fs = 1;
 static int verbose_fs = 0;
 
+static struct lock extend_lock;
+
 static block_sector_t logical_to_physical_idx(struct inode *inode, block_sector_t logical_idx);
+static bool extend_inode(struct inode *inode, off_t size, off_t offset);
 
 /* Returns the number of sectors to allocate for an inode SIZE
    bytes long. */
@@ -49,20 +53,20 @@ struct inode
     struct inode_disk data;             /* Inode content. */
   };
 
-static block_sector_t logical_to_physical_idx(struct inode *inode, block_sector_t logical_idx)
+static block_sector_t block_id_to_sector(struct inode *inode, block_sector_t block_id)
 {
   struct index_block *idx_buf;
   /* sectors 0 to 124 are pointed to directly */
-  if (logical_idx < 125)
+  if (block_id < 125)
   {
-    return inode->data.data_sectors[logical_idx];
+    return inode->data.data_sectors[block_id];
   }
 
-  /* 'advance' our logical_idx so that we are now 
+  /* 'advance' our block_id so that we are now 
       at the first index of this level of indirection */
-  logical_idx -= 125;
+  block_id -= 125;
   /* sectors 125 to 252 are pointed to indirectly */
-  if (logical_idx < 128)
+  if (block_id < 128)
   {
     block_sector_t idx1 = inode->data.index_1;
     if (idx1 == NULL) 
@@ -71,25 +75,25 @@ static block_sector_t logical_to_physical_idx(struct inode *inode, block_sector_
     /* read disk at sector idx1 into a temporary buffer */
     idx_buf = malloc(sizeof(struct index_block));
     block_read(fs_device, idx1, idx_buf);
-    block_sector_t physical_sector = idx_buf->sectors[logical_idx];
+    block_sector_t physical_sector = idx_buf->sectors[block_id];
     
     /* cleanup and return */
     free(idx_buf);
     return physical_sector;
   }
 
-  /* 'advance' our logical_idx again */
-  logical_idx -= 128;
+  /* 'advance' our block_id again */
+  block_id -= 128;
   /* sectors 253 to 16383 are at two levels of indirection.
       We don't point above 16383 because that would exceed 8 MB */
-  if (logical_idx < 16384)
+  if (block_id < 16384)
   {
     block_sector_t idx2 = inode->data.index_2;
     if (idx2 == NULL)
       return NULL;
 
-    block_sector_t idx1 = logical_idx / INDEX_BLOCK_ENTRIES;
-    int idx_offset = logical_idx % INDEX_BLOCK_ENTRIES;
+    block_sector_t idx1 = block_id / INDEX_BLOCK_ENTRIES;
+    int idx_offset = block_id % INDEX_BLOCK_ENTRIES;
 
     /* read disk at sector idx2 into a temporary buffer */
     idx_buf = malloc(sizeof(struct index_block));
@@ -138,6 +142,7 @@ inode_init (void)
 {
   if (verbose_fs) printf("inode_init()\n");
   list_init (&open_inodes);
+  lock_init(&extend_lock);
 }
 
 /* Initializes an inode with LENGTH bytes of data and
@@ -163,11 +168,11 @@ inode_create (block_sector_t sector, off_t length)
     {
 
       /* Initiate data_sectors array and indirect block addresses */
-      block_sector_t s;
-      for (s = 0; s < 125; s++)
-        disk_inode->data_sectors[s] = -1;
-      disk_inode->index_1 = -1;
-      disk_inode->index_2 = -1;
+      // block_sector_t s;
+      // for (s = 0; s < 125; s++)
+      //   disk_inode->data_sectors[s] = -1;
+      // disk_inode->index_1 = -1;
+      // disk_inode->index_2 = -1;
 
 
 
@@ -292,8 +297,8 @@ inode_remove (struct inode *inode)
 off_t
 inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset) 
 {
-  if (verbose_fs) printf("inode_read_at(): inode_number = %d, file_length = %d\n", inode->sector, inode->data.length);
-  if (verbose_fs) printf("inode_read_at(): read_size = %d, offset = %d\n", size, offset);
+  if (debug_fs) printf("inode_read_at(): inode_number = %d, file_length = %d\n", inode->sector, inode->data.length);
+  if (debug_fs) printf("inode_read_at(): read_size = %d, offset = %d\n", size, offset);
 
   uint8_t *buffer = buffer_;
   off_t bytes_read = 0;
@@ -301,9 +306,17 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
 
   while (size > 0) 
     {
+      /* TEMPORARY */
+      if (bytes_to_sectors(offset) > 124)
+        PANIC("TEMPORARY - ONLY GROWING UP TO 125 SECTORS FOR NOW");
+      /* TEMPORARY */
+
       /* Disk sector to read, starting byte offset within sector. */
-      block_sector_t sector_idx = byte_to_sector (inode, offset);
-      /* PUT CONVERSION FROM LOGICAL IDX TO ACTUAL IDX HERE */
+      //block_sector_t sector_idx = byte_to_sector (inode, offset);
+      
+      block_sector_t sector_idx = inode->data.data_sectors[bytes_to_sectors(offset)];
+      if (sector_idx > 4096)
+        PANIC("Got bad sector id for inode data table");
 
       int sector_ofs = offset % BLOCK_SECTOR_SIZE;
 
@@ -362,34 +375,36 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
   if (debug_fs) printf("inode_write_at(): inode_number = %d, file_length = %d\n", inode->sector, inode->data.length);
   if (debug_fs) printf("inode_write_at(): write_size = %d, offset = %d\n", size, offset);
 
-  int writing_past_eof = (inode->data.length < offset + size);
-  int starting_after_eof = (inode->data.length < offset);
-  block_sector_t *sector_pointer = NULL;
+  if (inode->data.length < offset + size)
+  {
+    extend_inode(inode, size, offset);
+  }
 
   if (inode->deny_write_cnt)
     return 0;
 
   while (size > 0) 
     {
-      /* Sector to write, starting byte offset within sector. */
-      block_sector_t sector_idx = byte_to_sector (inode, offset);
-
       /* TEMPORARY */
-      if (sector_idx > 124)
+      if (bytes_to_sectors(offset) > 124)
         PANIC("TEMPORARY - ONLY GROWING UP TO 125 SECTORS FOR NOW");
       /* TEMPORARY */
 
-      /* PUT CONVERSION FROM LOGICAL IDX TO ACTUAL IDX HERE */
+      /* Sector to write, starting byte offset within sector. */
+      //block_sector_t sector_idx = byte_to_sector (inode, offset);
+      block_sector_t sector_idx = inode->data.data_sectors[bytes_to_sectors(offset)];
+      if (sector_idx > 4096)
+        PANIC("Got bad sector id for inode data table");
 
       int sector_ofs = offset % BLOCK_SECTOR_SIZE;
 
       /* Bytes left in inode, bytes left in sector, lesser of the two. */
-      off_t inode_left = inode_length (inode) - offset;
+      //off_t inode_left = inode_length (inode) - offset;
       int sector_left = BLOCK_SECTOR_SIZE - sector_ofs;
-      int min_left = inode_left < sector_left ? inode_left : sector_left;
+      //int min_left = inode_left < sector_left ? inode_left : sector_left;
 
       /* Number of bytes to actually write into this sector. */
-      int chunk_size = size < min_left ? size : min_left;
+      int chunk_size = size < sector_left ? size : sector_left;
       if (chunk_size <= 0)
         break;
 
@@ -427,6 +442,45 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
   free (bounce);
 
   return bytes_written;
+}
+
+static bool extend_inode(struct inode *inode, off_t size, off_t offset)
+{
+  lock_acquire(&extend_lock);
+
+  /* Case 1: starting before EOF, but writing past it */
+  if (offset < inode->data.length)
+  {
+    int eof_sector_ofs = inode->data.length % BLOCK_SECTOR_SIZE;
+    int eof_sector_left = BLOCK_SECTOR_SIZE - eof_sector_ofs;
+
+    off_t bytes_needed = (offset + size) - inode->data.length;
+    off_t sectors_needed;
+
+    if (bytes_needed - eof_sector_left <= 0)
+      sectors_needed = 0;
+    else
+      sectors_needed = bytes_to_sectors(bytes_needed - eof_sector_left);
+
+    block_sector_t eof_block_id = bytes_to_sectors(inode->data.length);
+    int i;
+    block_sector_t *sector_pointer;
+    for (i = 0; i < sectors_needed; i++)
+    {
+      free_map_allocate(1, sector_pointer);
+      inode->data.data_sectors[eof_block_id + 1 + i] = *sector_pointer;
+    }
+    //block_sector_t eof_sector = block_id_to_sector(eof_block_id);
+  }
+
+  /* Case 2: starting after EOF */
+  else
+  {
+    printf("case 2\n");
+  }
+
+  lock_release(&extend_lock);
+  return true;
 }
 
 /* Disables writes to INODE.
