@@ -6,8 +6,8 @@
 #include "filesys/inode.h"
 #include "threads/malloc.h"
 
-static int debug_fs = 1;
-static int verbose_fs = 1;
+static int debug_fs = 0;
+static int verbose_fs = 0;
 
 /* A directory. */
 struct dir 

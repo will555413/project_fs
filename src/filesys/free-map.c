@@ -5,8 +5,8 @@
 #include "filesys/filesys.h"
 #include "filesys/inode.h"
 
-static int verbose_fs = 1;
-static int debug_fs = 1;
+static int verbose_fs = 0;
+static int debug_fs = 0;
 
 static struct file *free_map_file;   /* Free map file. */
 static struct bitmap *free_map;      /* Free map, one bit per sector. */
