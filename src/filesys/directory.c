@@ -6,6 +6,7 @@
 #include "filesys/inode.h"
 #include "threads/malloc.h"
 
+static int debug_fs = 1;
 static int verbose_fs = 1;
 
 /* A directory. */
@@ -36,6 +37,7 @@ dir_create (block_sector_t sector, size_t entry_cnt)
 struct dir *
 dir_open (struct inode *inode) 
 {
+  if (debug_fs) printf("dir_open(): inode_pointer = %p\n", inode);
   struct dir *dir = calloc (1, sizeof *dir);
   if (inode != NULL && dir != NULL)
     {
@@ -143,6 +145,7 @@ dir_lookup (const struct dir *dir, const char *name,
 bool
 dir_add (struct dir *dir, const char *name, block_sector_t inode_sector)
 {
+  if (debug_fs) printf("dir_add(): name = %s, inode_sector = %d\n", name, inode_sector);
   struct dir_entry e;
   off_t ofs;
   bool success = false;

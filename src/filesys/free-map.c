@@ -6,6 +6,7 @@
 #include "filesys/inode.h"
 
 static int verbose_fs = 1;
+static int debug_fs = 1;
 
 static struct file *free_map_file;   /* Free map file. */
 static struct bitmap *free_map;      /* Free map, one bit per sector. */
@@ -39,6 +40,8 @@ free_map_allocate (size_t cnt, block_sector_t *sectorp)
     }
   if (sector != BITMAP_ERROR)
     *sectorp = sector;
+
+  if (debug_fs) printf("free_map_allocate(): allocating sector = %d\n", sector);
   return sector != BITMAP_ERROR;
 }
 
