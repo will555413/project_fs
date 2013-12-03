@@ -153,7 +153,7 @@ inode_init (void)
 bool
 inode_create (block_sector_t sector, off_t length)
 {
-  if (debug_fs) printf("inode_create(): inumber = %d, length = %d\n", sector, length);
+  if (verbose_fs) printf("inode_create(): inumber = %d, length = %d\n", sector, length);
   struct inode_disk *disk_inode = NULL;
   bool success = false;
 
@@ -191,11 +191,11 @@ inode_create (block_sector_t sector, off_t length)
       {
         free_map_allocate (1, &disk_inode->data_sectors[i]);
         //disk_inode->data_sectors[i] = *sector_pointer;
-        if (debug_fs) printf("\t\tdisk_inode->data_sectors[0] = %d\n", disk_inode->data_sectors[0]);
+        if (verbose_fs) printf("\t\tdisk_inode->data_sectors[0] = %d\n", disk_inode->data_sectors[0]);
         //if (debug_fs) printf("data_sectors[%d] = %d\n", i, *sector_pointer);
       }
 
-      if (debug_fs) printf("\tbefore write disk_inode->data_sectors[0] = %d\n", disk_inode->data_sectors[0]);
+      if (verbose_fs) printf("\tbefore write disk_inode->data_sectors[0] = %d\n", disk_inode->data_sectors[0]);
       block_write (fs_device, sector, disk_inode);
       // if (free_map_allocate (sectors, sector_pointer)) 
       //   {
@@ -219,7 +219,7 @@ inode_create (block_sector_t sector, off_t length)
       success = true;
       free (disk_inode);
       
-      if (debug_fs)
+      if (verbose_fs)
       {
         printf("\tverifying inode creation...\n");
         struct inode_disk *verify_inode = calloc (1, sizeof *verify_inode);
@@ -237,7 +237,7 @@ inode_create (block_sector_t sector, off_t length)
 struct inode *
 inode_open (block_sector_t sector)
 {
-  if (debug_fs) printf("inode_open(): inumber = %d\n", sector);
+  if (verbose_fs) printf("inode_open(): inumber = %d\n", sector);
   
   struct list_elem *e;
   struct inode *inode;
@@ -292,8 +292,8 @@ inode_get_inumber (const struct inode *inode)
 void
 inode_close (struct inode *inode) 
 {
-  if (debug_fs) printf("inode_close(): inode->sector = %d\n", inode->sector);
-  if (debug_fs) printf("\tinode->data.data_sectors[0] = %d\n", inode->data.data_sectors[0]);
+  //if (debug_fs) printf("inode_close(): inode->sector = %d\n", inode->sector);
+  //if (debug_fs) printf("\tinode->data.data_sectors[0] = %d\n", inode->data.data_sectors[0]);
   /* Ignore null pointer. */
   if (inode == NULL)
     return;
@@ -304,13 +304,21 @@ inode_close (struct inode *inode)
       /* Remove from inode list and release lock. */
       list_remove (&inode->elem);
  
+      /* Write to disk */
+      block_write(fs_device, inode->sector, &inode->data);
+
       /* Deallocate blocks if removed. */
       if (inode->removed) 
         {
           if (debug_fs) printf("\tinode was marked as removed, deallocating sectors...\n");
           free_map_release (inode->sector, 1);
-          free_map_release (inode->data.data_sectors[0],
-                            bytes_to_sectors (inode->data.length)); 
+          int i = 0;
+          while (inode->data.data_sectors[i] != -1)
+          {
+            free_map_release (inode->data.data_sectors[i], 1);
+            i++; 
+          }
+          
         }
 
       free (inode); 
@@ -332,9 +340,9 @@ inode_remove (struct inode *inode)
 off_t
 inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset) 
 {
-  if (debug_fs) printf("inode_read_at(): inode_number = %d, file_length = %d\n", inode->sector, inode->data.length);
+  //if (debug_fs) printf("inode_read_at(): inode_number = %d, file_length = %d\n", inode->sector, inode->data.length);
   //if (debug_fs) printf("inode_read_at(): read_size = %d, offset = %d\n", size, offset);
-  if (debug_fs) printf("\tinode->data.data_sectors[0] = %d\n", inode->data.data_sectors[0]);
+  //if (debug_fs) printf("\tinode->data.data_sectors[0] = %d\n", inode->data.data_sectors[0]);
 
   uint8_t *buffer = buffer_;
   off_t bytes_read = 0;
@@ -353,7 +361,7 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
       //if (debug_fs) printf("block_id = %d\n", block_id);
       
       block_sector_t sector_idx = inode->data.data_sectors[block_id];
-      if (debug_fs) printf("sector_idx = %d\n", sector_idx);
+      //if (debug_fs) printf("sector_idx = %d\n", sector_idx);
       if (inode->sector != 0 && sector_idx == 0)
         PANIC("ERMAGER");
       if (sector_idx > 4*4096)
@@ -416,9 +424,9 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
   off_t bytes_written = 0;
   uint8_t *bounce = NULL;
 
-  if (debug_fs) printf("inode_write_at(): inode_number = %d, file_length = %d\n", inode->sector, inode->data.length);
+  //if (debug_fs) printf("inode_write_at(): inode_number = %d, file_length = %d\n", inode->sector, inode->data.length);
   //if (debug_fs) printf("inode_write_at(): write_size = %d, offset = %d\n", size, offset);
-  if (debug_fs) printf("\tinode->data.data_sectors[0] = %d\n", inode->data.data_sectors[0]);
+  //if (debug_fs) printf("\tinode->data.data_sectors[0] = %d\n", inode->data.data_sectors[0]);
 
   if (inode->data.length < offset + size)
   {
@@ -498,11 +506,11 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
 
 static bool extend_inode(struct inode *inode, off_t size, off_t offset)
 {
-  if (debug_fs) printf("extend_inode(): inode->sector = %d\n", inode->sector);
+  if (debug_fs) printf("extend_inode(): inode->sector = %d, size = %d, offset = %d\n", inode->sector, size, offset);
   lock_acquire(&extend_lock);
 
   /* Case 1: starting before EOF, but writing past it */
-  if (offset < inode->data.length)
+  if (offset <= inode->data.length)
   {
     int eof_sector_ofs = inode->data.length % BLOCK_SECTOR_SIZE;
     int eof_sector_left = BLOCK_SECTOR_SIZE - eof_sector_ofs;
@@ -524,6 +532,7 @@ static bool extend_inode(struct inode *inode, off_t size, off_t offset)
       inode->data.data_sectors[eof_block_id + 1 + i] = *sector_pointer;
     }
     //block_sector_t eof_sector = block_id_to_sector(eof_block_id);
+    inode->data.length += bytes_needed;
   }
 
   /* Case 2: starting after EOF */
