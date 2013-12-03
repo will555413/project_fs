@@ -360,7 +360,7 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
       block_sector_t block_id = offset/BLOCK_SECTOR_SIZE;
       //if (debug_fs) printf("block_id = %d\n", block_id);
       
-      block_sector_t sector_idx = inode->data.data_sectors[block_id];
+      block_sector_t sector_idx = block_id_to_sector(inode, block_id);
       //if (debug_fs) printf("sector_idx = %d\n", sector_idx);
       if (inode->sector != 0 && sector_idx == 0)
         PANIC("ERMAGER");
@@ -448,7 +448,7 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
       block_sector_t block_id = offset/BLOCK_SECTOR_SIZE;
       //if (debug_fs) printf("block_id = %d\n", block_id);
 
-      block_sector_t sector_idx = inode->data.data_sectors[block_id];
+      block_sector_t sector_idx = block_id_to_sector(inode, block_id);
       if (debug_fs) printf("sector_idx = inode->data.data_sectors[%d] = %d\n", block_id, sector_idx);
 
       if (inode->sector != 0 && sector_idx == 0)
@@ -504,6 +504,42 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
   return bytes_written;
 }
 
+/* makes sure that at least 'sectors' are allocated to the direct array */
+static void allocate_direct(struct inode *inode, block_sector_t sectors)
+{
+  ASSERT(sectors <= 125)
+  int i;
+  for (i = 0; i < sectors; i++)
+  {
+    if (inode->data.data_sectors[i] == -1)
+      free_map_allocate(1, &inode->data.data_sectors[i]);
+  }
+}
+
+/* Makes sure that the indirect block is allocated, and all entries up to 'sectors' are allocated */
+static void allocate_indirect(struct inode *inode, block_sector_t sectors)
+{
+  ASSERT(sectors <= 128)
+  struct index_block *indirect_block;
+  if (inode->data.index_1 == -1)
+  {
+    indirect_block = calloc(1, sizeof *indirect_block);
+    free_map_allocate(1, &inode->data.index_1);
+  }
+  else
+    block_read(fs_device, inode->data.index_1, indirect_block);
+
+  int i;
+  for (i = 0; i < sectors; i++)
+  {
+    if (indirect_block->sectors[i] == -1)
+      free_map_allocate(1, &indirect_block->sectors[i]);
+  }
+
+  block_write(fs_device, inode->data.index_1, indirect_block);
+  free(indirect_block);
+}
+
 static bool extend_inode(struct inode *inode, off_t size, off_t offset)
 {
   if (debug_fs) printf("extend_inode(): inode->sector = %d, size = %d, offset = %d\n", inode->sector, size, offset);
@@ -517,6 +553,7 @@ static bool extend_inode(struct inode *inode, off_t size, off_t offset)
 
     off_t bytes_needed = (offset + size) - inode->data.length;
     off_t sectors_needed;
+    off_t sectors_grown = 0;
 
     if (bytes_needed - eof_sector_left <= 0)
       sectors_needed = 0;
@@ -525,12 +562,31 @@ static bool extend_inode(struct inode *inode, off_t size, off_t offset)
 
     block_sector_t eof_block_id = bytes_to_sectors(inode->data.length);
     int i;
-    block_sector_t *sector_pointer;
-    for (i = 0; i < sectors_needed; i++)
-    {
-      free_map_allocate(1, sector_pointer);
-      inode->data.data_sectors[eof_block_id + 1 + i] = *sector_pointer;
-    }
+
+    int new_eof = eof_block_id + sectors_needed;
+    if (new_eof <= 124)
+      allocate_direct(inode, new_eof);
+    else if (new_eof <= 252)
+      allocate_indirect(inode, new_eof);
+    else
+      PANIC("NOT IMPLEMTEND YET GO AWAY");
+    // block_sector_t *sector_pointer;
+
+    // if (eof_block_id < 124)
+    // {
+    //   for (i = 0; i < sectors_needed; i++)
+    //   {
+    //     free_map_allocate(1, sector_pointer);
+    //     inode->data.data_sectors[eof_block_id + 1 + i] = *sector_pointer;
+    //     sectors_grown++;
+    //     if ((eof_block_id + 1 + i) = 124)
+    //     {
+    //       sectors_needed -= sectors_grown;
+    //       break;
+    //     }
+    //   }
+    //   eof_block_id += sectors_grown;
+    // }
     //block_sector_t eof_sector = block_id_to_sector(eof_block_id);
     inode->data.length += bytes_needed;
   }
