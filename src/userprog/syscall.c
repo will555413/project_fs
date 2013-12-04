@@ -257,6 +257,79 @@ syscall_handler (struct intr_frame *f UNUSED)
       t->files_closed++;
       break;
 
+    case SYS_CHDIR:
+      dirline = *arg0;
+      //f->eax = chdir(dir);
+      for (token = strtok_r(dirline,"/",save_ptr);
+           token != NULL;
+           token = strtok_r(NULL,"/",save_ptr))
+      {
+        if(strcmp(token, "."))
+          continue;
+        if(strcmp(token, ".."))
+        {
+          dir = dir->prev;/*need to work on how to get previous dir*/
+        }
+        if(strlen(token)>14)
+        {
+          if(debug_fs) printf("Directory name is too long\n");
+          f->eax = 0;
+          break;
+        }
+        struct inode **inode;
+        if(dir_lookup (dir/*getting current dir?*/, token, inode))
+        {
+          dir = dir_open(inode);
+        }
+        else
+        {
+          if(debug_fs) printf("Directory not found\n");
+          f->eax = 0;
+          break;
+        }
+      }
+      f->eax = 1;
+        
+      break;
+
+    case SYS_MKDIR:
+      dirline = *arg0;
+      for (token = strtok_r(dirline,"/",save_ptr);
+           token != NULL;
+           token = strtok_r(NULL,"/",save_ptr))
+      {
+        if(strcmp(token, "."))
+          continue;
+        if(strcmp(token, ".."))
+        {
+          dir = dir->prev;/*need to work on how to get previous dir*/
+        }
+        if(strlen(token)>14)
+        {
+          if(debug_fs) printf("Directory name is too long\n");
+          f->eax = 0;
+          break;
+        }
+        struct inode **inode;
+        if(dir_lookup (dir/*getting current dir?*/, token, inode))
+        {
+          dir = dir_open(inode);
+        }
+        else if(strtok_r(NULL,"/",save_ptr)==NULL)
+        {
+          //create a new directory and add it to current directory
+          //Struct dir *dir
+        }
+        else
+        {
+          if(debug_fs) printf("Directory not found\n");
+          f->eax = 0;
+          break;
+        }
+      }
+      f->eax = 1;
+      break;
+
   	default:
   		printf("This system call has not yet been implemented: %d\n", *syscall_num_ptr);
   		thread_exit();
