@@ -8,22 +8,25 @@
 #include "threads/malloc.h"
 #include "threads/synch.h"
 
+#define DIRECT_ENTRIES 124
 #define INDEX_BLOCK_ENTRIES 128
+#define DOUBLY_INDIRECT_ENTRIES 16384
 
 /* On-disk inode.
    Must be exactly BLOCK_SECTOR_SIZE bytes long. */
 struct inode_disk
   {
-    block_sector_t data_sectors[125];   /* Data sectors */
+    block_sector_t data_sectors[DIRECT_ENTRIES];   /* Data sectors */
     block_sector_t index_1;             /* Sector number of indirect index */
     block_sector_t index_2;             /* Sector number of doubly indirect index */
     off_t length;                       /* File size in bytes. */
+    int is_directory;
   };
 
 /* On-disk index, should probably be BLOCK_SECTOR_SIZE bytes long. */
 struct index_block
 {
-  block_sector_t sectors[128];          /* Array of sectors */
+  block_sector_t sectors[INDEX_BLOCK_ENTRIES];          /* Array of sectors */
 };
 
 static int debug_fs = 0;
@@ -53,20 +56,99 @@ struct inode
     struct inode_disk data;             /* Inode content. */
   };
 
+/* makes sure that at least 'sectors' are allocated to the direct array */
+static void allocate_direct(struct inode_disk *inode_disk, block_sector_t sectors)
+{
+  ASSERT(sectors <= DIRECT_ENTRIES)
+  int i;
+  for (i = 0; i < sectors; i++)
+  {
+    if (inode_disk->data_sectors[i] == -1)
+      free_map_allocate(1, &inode_disk->data_sectors[i]);
+  }
+}
+
+/* Makes sure that the indirect block is allocated, and all entries up to 'sectors' are allocated */
+static void allocate_indirect(struct inode_disk *inode_disk, block_sector_t sectors)
+{
+  ASSERT(sectors <= INDEX_BLOCK_ENTRIES)
+  struct index_block *indirect_block = calloc(1, sizeof *indirect_block);
+  if (inode_disk->index_1 == -1)
+  {
+    free_map_allocate(1, &inode_disk->index_1);
+  }
+  else
+    block_read(fs_device, inode_disk->index_1, indirect_block);
+
+  int i;
+  for (i = 0; i < sectors; i++)
+  {
+    if (indirect_block->sectors[i] == NULL)
+      free_map_allocate(1, &indirect_block->sectors[i]);
+  }
+
+  block_write(fs_device, inode_disk->index_1, indirect_block);
+  free(indirect_block);
+}
+
+/* Makes sure that the indirect block is allocated, and all entries up to 'sectors' are allocated */
+static void allocate_doubly_indirect(struct inode_disk *inode_disk, block_sector_t sectors)
+{
+  ASSERT(sectors <= DOUBLY_INDIRECT_ENTRIES)
+  struct index_block *doubly_indirect_block = calloc(1, sizeof *doubly_indirect_block);
+  if (inode_disk->index_2 == -1)
+  {
+    free_map_allocate(1, &inode_disk->index_2);
+  }
+  else
+    block_read(fs_device, inode_disk->index_2, doubly_indirect_block);
+
+  int indirect_needed = DIV_ROUND_UP(sectors, INDEX_BLOCK_ENTRIES);
+
+  int i;
+  for (i = 0; i < indirect_needed; i++)
+  {
+    if (doubly_indirect_block->sectors[i] == NULL)
+    {
+      free_map_allocate(1, &doubly_indirect_block->sectors[i]);
+      struct index_block *indirect_block = calloc(1, sizeof *indirect_block);
+      int to_allocate;
+
+      /* Allocate all indexes unless at last indirect_block */
+      if (i != indirect_needed - 1)
+        to_allocate = INDEX_BLOCK_ENTRIES;
+      else
+        to_allocate = sectors % INDEX_BLOCK_ENTRIES;
+
+      int j;
+      for (j = 0; j < to_allocate; j++)
+      {
+        free_map_allocate(1, &indirect_block->sectors[j]);
+      }
+      
+      block_write(fs_device, doubly_indirect_block->sectors[i], indirect_block);
+      free(indirect_block);
+    }
+  }
+
+  block_write(fs_device, inode_disk->index_2, doubly_indirect_block);
+  free(doubly_indirect_block);
+}
+
 static block_sector_t block_id_to_sector(struct inode *inode, block_sector_t block_id)
 {
   struct index_block *idx_buf;
   /* sectors 0 to 124 are pointed to directly */
-  if (block_id < 125)
+  if (block_id < DIRECT_ENTRIES)
   {
     return inode->data.data_sectors[block_id];
   }
 
   /* 'advance' our block_id so that we are now 
       at the first index of this level of indirection */
-  block_id -= 125;
-  /* sectors 125 to 252 are pointed to indirectly */
-  if (block_id < 128)
+  block_id -= DIRECT_ENTRIES;
+  /* sectors DIRECT_ENTRIES to 252 are pointed to indirectly */
+  if (block_id < INDEX_BLOCK_ENTRIES)
   {
     block_sector_t idx1 = inode->data.index_1;
     if (idx1 == NULL) 
@@ -83,7 +165,7 @@ static block_sector_t block_id_to_sector(struct inode *inode, block_sector_t blo
   }
 
   /* 'advance' our block_id again */
-  block_id -= 128;
+  block_id -= INDEX_BLOCK_ENTRIES;
   /* sectors 253 to 16383 are at two levels of indirection.
       We don't point above 16383 because that would exceed 8 MB */
   if (block_id < 16384)
@@ -153,7 +235,7 @@ inode_init (void)
 bool
 inode_create (block_sector_t sector, off_t length)
 {
-  if (verbose_fs) printf("inode_create(): inumber = %d, length = %d\n", sector, length);
+  if (debug_fs) printf("inode_create(): inumber = %d, length = %d\n", sector, length);
   struct inode_disk *disk_inode = NULL;
   bool success = false;
 
@@ -169,13 +251,10 @@ inode_create (block_sector_t sector, off_t length)
 
       /* Initiate data_sectors array and indirect block addresses */
       block_sector_t s;
-      for (s = 0; s < 125; s++)
+      for (s = 0; s < DIRECT_ENTRIES; s++)
         disk_inode->data_sectors[s] = -1;
       disk_inode->index_1 = -1;
       disk_inode->index_2 = -1;
-
-
-
 
       size_t sectors = bytes_to_sectors (length);
       //if (debug_fs) printf("sectors = %d\n", sectors);
@@ -186,14 +265,39 @@ inode_create (block_sector_t sector, off_t length)
       block_sector_t first_sector = *sector_pointer;
       disk_inode->data_sectors[0] = first_sector;
 
-      int i;
-      for (i = 1; i < sectors; i++)
+      int direct_blocks = DIRECT_ENTRIES;
+      int indirect_blocks = INDEX_BLOCK_ENTRIES;
+      int doubly_indirect_blocks = 16384;
+      int total_blocks = direct_blocks + indirect_blocks + doubly_indirect_blocks; /* 16637 */
+
+      if (sectors <= direct_blocks)
       {
-        free_map_allocate (1, &disk_inode->data_sectors[i]);
-        //disk_inode->data_sectors[i] = *sector_pointer;
-        if (verbose_fs) printf("\t\tdisk_inode->data_sectors[0] = %d\n", disk_inode->data_sectors[0]);
-        //if (debug_fs) printf("data_sectors[%d] = %d\n", i, *sector_pointer);
+        allocate_direct(disk_inode, sectors);
       }
+      else if (sectors <= direct_blocks + indirect_blocks)
+      {
+        allocate_direct(disk_inode, DIRECT_ENTRIES);
+        allocate_indirect(disk_inode, sectors - direct_blocks);
+      }
+      else if (sectors <= total_blocks)
+      {
+        allocate_direct(disk_inode, DIRECT_ENTRIES);
+        allocate_indirect(disk_inode, INDEX_BLOCK_ENTRIES);
+        allocate_doubly_indirect(disk_inode, sectors - indirect_blocks - direct_blocks);
+      }
+      else
+      {
+        PANIC("CAN'T GROW BIGGER THAN DISK GO AWAY - DISK GROWING NOT IMPLEMTEND YET THIS ISN'T SPACEFUTURE");
+      }
+
+      // int i;
+      // for (i = 1; i < sectors; i++)
+      // {
+      //   free_map_allocate (1, &disk_inode->data_sectors[i]);
+      //   //disk_inode->data_sectors[i] = *sector_pointer;
+      //   if (verbose_fs) printf("\t\tdisk_inode->data_sectors[0] = %d\n", disk_inode->data_sectors[0]);
+      //   //if (debug_fs) printf("data_sectors[%d] = %d\n", i, *sector_pointer);
+      // }
 
       if (verbose_fs) printf("\tbefore write disk_inode->data_sectors[0] = %d\n", disk_inode->data_sectors[0]);
       block_write (fs_device, sector, disk_inode);
@@ -350,11 +454,6 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
 
   while (size > 0) 
     {
-      /* TEMPORARY */
-      if (bytes_to_sectors(offset) > 124)
-        PANIC("TEMPORARY - ONLY GROWING UP TO 125 SECTORS FOR NOW");
-      /* TEMPORARY */
-
       /* Disk sector to read, starting byte offset within sector. */
       //block_sector_t sector_idx = byte_to_sector (inode, offset);
       block_sector_t block_id = offset/BLOCK_SECTOR_SIZE;
@@ -438,11 +537,6 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
 
   while (size > 0) 
     {
-      /* TEMPORARY */
-      if (bytes_to_sectors(offset) > 124)
-        PANIC("TEMPORARY - ONLY GROWING UP TO 125 SECTORS FOR NOW");
-      /* TEMPORARY */
-
       /* Sector to write, starting byte offset within sector. */
       //block_sector_t sector_idx = byte_to_sector (inode, offset);
       block_sector_t block_id = offset/BLOCK_SECTOR_SIZE;
@@ -504,85 +598,6 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
   return bytes_written;
 }
 
-/* makes sure that at least 'sectors' are allocated to the direct array */
-static void allocate_direct(struct inode *inode, block_sector_t sectors)
-{
-  ASSERT(sectors <= 125)
-  int i;
-  for (i = 0; i < sectors; i++)
-  {
-    if (inode->data.data_sectors[i] == -1)
-      free_map_allocate(1, &inode->data.data_sectors[i]);
-  }
-}
-
-/* Makes sure that the indirect block is allocated, and all entries up to 'sectors' are allocated */
-static void allocate_indirect(struct inode *inode, block_sector_t sectors)
-{
-  ASSERT(sectors <= 128)
-  struct index_block *indirect_block = calloc(1, sizeof *indirect_block);
-  if (inode->data.index_1 == -1)
-  {
-    free_map_allocate(1, &inode->data.index_1);
-  }
-  else
-    block_read(fs_device, inode->data.index_1, indirect_block);
-
-  int i;
-  for (i = 0; i < sectors; i++)
-  {
-    if (indirect_block->sectors[i] == NULL)
-      free_map_allocate(1, &indirect_block->sectors[i]);
-  }
-
-  block_write(fs_device, inode->data.index_1, indirect_block);
-  free(indirect_block);
-}
-
-/* Makes sure that the indirect block is allocated, and all entries up to 'sectors' are allocated */
-static void allocate_doubly_indirect(struct inode *inode, block_sector_t sectors)
-{
-  ASSERT(sectors <= 128)
-  struct index_block *doubly_indirect_block = calloc(1, sizeof *doubly_indirect_block);
-  if (inode->data.index_2 == -1)
-  {
-    free_map_allocate(1, &inode->data.index_2);
-  }
-  else
-    block_read(fs_device, inode->data.index_2, doubly_indirect_block);
-
-  int indirect_needed = DIV_ROUND_UP(sectors, 128);
-
-  int i;
-  for (i = 0; i < indirect_needed; i++)
-  {
-    if (doubly_indirect_block->sectors[i] == NULL)
-    {
-      free_map_allocate(1, &doubly_indirect_block->sectors[i]);
-      struct index_block *indirect_block = calloc(1, sizeof *indirect_block);
-      int to_allocate;
-
-      /* Allocate all indexes unless at last indirect_block */
-      if (i != indirect_needed - 1)
-        to_allocate = 128;
-      else
-        to_allocate = sectors % 128;
-
-      int j;
-      for (j = 0; j < to_allocate; j++)
-      {
-        free_map_allocate(1, &indirect_block->sectors[j]);
-      }
-      
-      block_write(fs_device, doubly_indirect_block->sectors[i], indirect_block);
-      free(indirect_block);
-    }
-  }
-
-  block_write(fs_device, inode->data.index_2, doubly_indirect_block);
-  free(doubly_indirect_block);
-}
-
 
 static bool extend_inode(struct inode *inode, off_t size, off_t offset)
 {
@@ -605,26 +620,26 @@ static bool extend_inode(struct inode *inode, off_t size, off_t offset)
       sectors_needed = bytes_to_sectors(bytes_needed - eof_sector_left);
 
     int new_length_sectors = bytes_to_sectors(inode->data.length) + sectors_needed; /* New length of file in sectors */
-    int direct_blocks = 125;
-    int indirect_blocks = 128;
+    int direct_blocks = DIRECT_ENTRIES;
+    int indirect_blocks = INDEX_BLOCK_ENTRIES;
     int doubly_indirect_blocks = 16384;
     int total_blocks = direct_blocks + indirect_blocks + doubly_indirect_blocks; /* 16637 */
 
-    printf("\tnew_length_sectors = %d\n", new_length_sectors);
+    if (debug_fs) printf("\tnew_length_sectors = %d\n", new_length_sectors);
     if (new_length_sectors <= direct_blocks)
     {
-      allocate_direct(inode, new_length_sectors);
+      allocate_direct(&inode->data, new_length_sectors);
     }
     else if (new_length_sectors <= direct_blocks + indirect_blocks)
     {
-      allocate_direct(inode, 125);
-      allocate_indirect(inode, new_length_sectors - direct_blocks);
+      allocate_direct(&inode->data, DIRECT_ENTRIES);
+      allocate_indirect(&inode->data, new_length_sectors - direct_blocks);
     }
     else if (new_length_sectors <= total_blocks)
     {
-      allocate_direct(inode, 125);
-      allocate_indirect(inode, 128);
-      allocate_doubly_indirect(inode, new_length_sectors - indirect_blocks - direct_blocks);
+      allocate_direct(&inode->data, DIRECT_ENTRIES);
+      allocate_indirect(&inode->data, INDEX_BLOCK_ENTRIES);
+      allocate_doubly_indirect(&inode->data, new_length_sectors - indirect_blocks - direct_blocks);
     }
     else
     {

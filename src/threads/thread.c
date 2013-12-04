@@ -480,6 +480,7 @@ init_thread (struct thread *t, const char *name, int priority)
   sema_init(&t->load_wait_sema, 0);
   sema_init(&t->wait_sema, 0);
   t->load_wait_status = 0;
+  t->current_directory = 1;
   t->magic = THREAD_MAGIC;
   list_push_back (&all_list, &t->allelem);
 }
