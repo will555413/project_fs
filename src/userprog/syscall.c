@@ -361,17 +361,21 @@ syscall_handler (struct intr_frame *f UNUSED)
         break;
       }
 
-      if (inode->data.is_directory)
-        file_ptr = dir_open(inode);
-      else
-        file_ptr = file_open(inode);
-
+      file_ptr = file_open(inode);
 
   		if (file_ptr == NULL)
   		{
   			f->eax = -1;
   			break;
   		}
+
+      if (inode->data.is_directory)
+      {
+        file_ptr->is_dir = true;
+        file_ptr->dir_ptr = dir_open(file_ptr->inode);
+      }
+      else
+        file_ptr->is_dir = false;
   		
       //printf("\tfile_ptr->inode->sector = %d\n", file_ptr->inode->sector);
   		fd = 2;
@@ -450,7 +454,12 @@ syscall_handler (struct intr_frame *f UNUSED)
           f->eax = 0;
           break;
         }
-
+        // if (file_ptr->is_dir)
+        // {
+        //   if (debug_fs) printf("trying to write to a directory\n");
+        //   f->eax = -1;
+        //   break;
+        // }
         // sema_down(t->filesys_sema_ptr);
         // f->eax = file_write(file_ptr, buf, *arg2);
         // sema_up(t->filesys_sema_ptr);
@@ -494,10 +503,7 @@ syscall_handler (struct intr_frame *f UNUSED)
         break;
       }
 
-      if (file_ptr->inode->data.is_directory)
-        dir_close(file_ptr->inode);
-      else
-        inode_close(file_ptr->inode);
+      file_close(file_ptr);
 
       t->fd_array[*arg0] = NULL;
       t->files_closed++;
