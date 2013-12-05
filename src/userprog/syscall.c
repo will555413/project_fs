@@ -9,6 +9,7 @@
 #include "threads/vaddr.h"
 #include "threads/pte.h"
 #include "threads/malloc.h"
+#include "threads/palloc.h"
 #include <string.h>
 #include "filesys/filesys.h"
 #include "filesys/file.h"
@@ -40,19 +41,26 @@ static block_sector_t temp_dir_inumber = 1;
 //   }
 // }
 
-static struct inode *get_last_inode(char *dirline, struct dir *current_dir, char *last_file)
+static struct inode *get_last_inode(char *dirline, char *last_file)
 {
-  if (debug_fs) printf("\tget_last_inode(): dirline = %s, cur_dir_inode = %d @ %p\n", dirline, current_dir->inode->sector, current_dir);
-  int cd_sector = current_dir->inode->sector;
-  int dirline_length = strlen(dirline) + 1;
-  if (debug_fs) printf("\tcur_dir_inode = %d @ %p\n", current_dir->inode->sector, current_dir);
-  char *dirline_cpy = calloc(dirline_length, sizeof(char));
-  if (debug_fs) printf("\tcur_dir_inode = %d @ %p\n", current_dir->inode->sector, current_dir);
-  strlcpy(dirline_cpy, dirline, dirline_length);
-  if (debug_fs) printf("\tcur_dir_inode = %d @ %p\n", current_dir->inode->sector, current_dir);
+  //if (debug_fs) printf("\tget_last_inode(): dirline = %s, cur_dir_inode = %d @ %p\n", dirline, current_dir->inode->sector, current_dir);
+  
+  /* Save the sector of the current working directory */
+  struct thread *t = thread_current();
+  block_sector_t cd_sector = t->current_directory;
+
+  /* Make a copy of the dirline argument provided by the user so that we don't modify
+      their memory */
+  char *dirline_cpy;
+  dirline_cpy = palloc_get_page(0);
+  if (dirline_cpy == NULL)
+    return TID_ERROR;
+  strlcpy(dirline_cpy, dirline, PGSIZE);
 
   char *save_ptr, *token;
   struct inode *inode;
+  struct inode *temp_inode;
+  struct dir *current_dir;
   struct dir *next_dir = NULL;
   for (token = strtok_r(dirline_cpy, "/", &save_ptr);
         token != NULL;
@@ -71,7 +79,9 @@ static struct inode *get_last_inode(char *dirline, struct dir *current_dir, char
     if(strcmp(token, "..") == 0)
     {
       if (debug_fs) printf("\t\tdetected \"..\", going up a level\n");
-      current_dir = dir_parent(current_dir);
+      temp_inode = inode_open(cd_sector);
+      cd_sector = temp_inode->data.parent_dir;
+      continue;
     }
 
     if(strlen(token)>14)
@@ -81,10 +91,9 @@ static struct inode *get_last_inode(char *dirline, struct dir *current_dir, char
       break;
     }
 
-    if (debug_fs) printf("\t\ttrying to lookup '%s' in the dir = %d @ %p\n", token, current_dir->inode->sector, current_dir);
-    struct inode *temp_inode = inode_open(cd_sector);
+    temp_inode = inode_open(cd_sector);
     current_dir = dir_open(temp_inode);
-    if (debug_fs) printf("\t\tFOR REAL trying to lookup '%s' in the dir = %d @ %p\n", token, current_dir->inode->sector, current_dir);
+    if (debug_fs) printf("\t\ttrying to lookup '%s' in the dir = %d @ %p\n", token, current_dir->inode->sector, current_dir);
 
     if(dir_lookup(current_dir, token, &inode))
     {
@@ -92,23 +101,27 @@ static struct inode *get_last_inode(char *dirline, struct dir *current_dir, char
       if(inode->data.is_directory)
       {
         next_dir = dir_open(inode);
+        cd_sector = next_dir->inode->sector;
         dir_close(current_dir);
         current_dir = next_dir;
         if (debug_fs) printf("\t\tchanged current dir inumber to %d and dir @ %p\n", current_dir->inode->sector, current_dir);
       }
+      else
+        dir_close(current_dir);
     }
     else
     {
+      dir_close(current_dir);
       inode = NULL;
       break;
     }
   }
 
-  if (debug_fs) printf("\t\tcurrent dir inumber = %d and dir @ %p\n", current_dir->inode->sector, current_dir);
-  temp_dir_inumber = current_dir->inode->sector;
+  //if (debug_fs) printf("\t\tcurrent dir inumber = %d and dir @ %p\n", current_dir->inode->sector, current_dir);
+  temp_dir_inumber = cd_sector;
   if (debug_fs) printf("\t\ttemp_dir_inumber = %d\n", temp_dir_inumber);
 
-  free(dirline_cpy);
+  palloc_free_page(dirline_cpy);
   return inode;
 }
 
@@ -185,7 +198,7 @@ syscall_init (void)
 static void
 syscall_handler (struct intr_frame *f UNUSED) 
 {
-  struct thread *t = thread_current ();
+  struct thread *t = thread_current();
   struct file *file_ptr;
   struct dir *dir;
   struct inode *inode;
@@ -281,12 +294,13 @@ syscall_handler (struct intr_frame *f UNUSED)
       dir = dir_open(temp_inode);
       // if (debug_fs) printf("\t!!!dir address before get_last_inode = %p\n", dir);
       // if (debug_fs) printf("\t!!!dir inumber before get_last_inode = %d\n", dir->inode->sector);
-      inode = get_last_inode(*arg0, dir, last_file);
+      inode = get_last_inode(*arg0, last_file);
       // if (debug_fs) printf("\t!!!dir address after get_last_inode = %p\n", dir);
       // if (debug_fs) printf("\t!!!dir inumber after get_last_inode = %d\n", dir->inode->sector);
       if (inode != NULL)
       {
         f->eax = false;
+        dir_close(dir);
         break;
       }
 
@@ -294,12 +308,19 @@ syscall_handler (struct intr_frame *f UNUSED)
 
       
       free_map_allocate(1, &new_file_sector);
-      inode_create(new_file_sector, 0, 0);
+      inode_create(new_file_sector, *arg1, 0);
       temp_inode = inode_open(temp_dir_inumber);
       dir = dir_open(temp_inode);
       /* Add the file as an entry to it's parent directory */
       success = dir_add(dir, last_file, new_file_sector);
+      inode = inode_open(new_file_sector);
+      inode->data.parent_dir = dir->inode->sector;
+      if (debug_fs) printf("inode->data.length = %d\n", inode->data.length);
+      inode_close(inode);
       dir_close(dir);
+
+      //printf("\tnew_file_sector = %d\n", new_file_sector);
+
 
       f->eax = success;
   		break;
@@ -326,18 +347,20 @@ syscall_handler (struct intr_frame *f UNUSED)
       
       const char *open_buf = *arg0;
 
-      sema_down(t->filesys_sema_ptr);
-      file_ptr = filesys_open(open_buf);
-      sema_up(t->filesys_sema_ptr);
+      // sema_down(t->filesys_sema_ptr);
+      // file_ptr = filesys_open(open_buf);
+      // sema_up(t->filesys_sema_ptr);
 
 
-      // temp_inode = inode_open(t->current_directory);
+      temp_inode = inode_open(t->current_directory);
+      dir = dir_open(temp_inode);
+      inode = get_last_inode(*arg0, last_file);
+      dir_close(dir);
 
-
-      // if (inode->data.is_directory)
-      //   file_ptr = dir_open(inode);
-      // else
-      //   file_ptr = file_open(inode);
+      if (inode->data.is_directory)
+        file_ptr = dir_open(inode);
+      else
+        file_ptr = file_open(inode);
 
 
   		if (file_ptr == NULL)
@@ -346,6 +369,7 @@ syscall_handler (struct intr_frame *f UNUSED)
   			break;
   		}
   		
+      //printf("\tfile_ptr->inode->sector = %d\n", file_ptr->inode->sector);
   		fd = 2;
   		while (t->fd_array[fd] != NULL && fd < 128)
   		{
@@ -364,9 +388,11 @@ syscall_handler (struct intr_frame *f UNUSED)
         break;
       }
       file_ptr = t->fd_array[(int)*arg0];
-      sema_down(t->filesys_sema_ptr);
-      f->eax = file_length(file_ptr);
-      sema_up(t->filesys_sema_ptr);
+      // sema_down(t->filesys_sema_ptr);
+      // f->eax = file_length(file_ptr);
+      // sema_up(t->filesys_sema_ptr);
+      if (debug_fs) printf("file_ptr->inode->data.length = %d\n", file_ptr->inode->data.length);
+      f->eax = file_ptr->inode->data.length;
       break;
 
     case SYS_READ:
@@ -386,9 +412,10 @@ syscall_handler (struct intr_frame *f UNUSED)
       else
       {
         file_ptr = t->fd_array[*arg0];
-        sema_down(t->filesys_sema_ptr);
-        f->eax = file_read(file_ptr, (void*)*arg1, (off_t)*arg2);
-        sema_up(t->filesys_sema_ptr);
+        // sema_down(t->filesys_sema_ptr);
+        // f->eax = file_read(file_ptr, (void*)*arg1, (off_t)*arg2);
+        // sema_up(t->filesys_sema_ptr);
+        f->eax = inode_read_at(file_ptr->inode, (void*)*arg1, (off_t)*arg2, file_ptr->pos);
       }
       break;
 
@@ -420,9 +447,11 @@ syscall_handler (struct intr_frame *f UNUSED)
           break;
         }
 
-        sema_down(t->filesys_sema_ptr);
-        f->eax = file_write(file_ptr, buf, *arg2);
-        sema_up(t->filesys_sema_ptr);
+        // sema_down(t->filesys_sema_ptr);
+        // f->eax = file_write(file_ptr, buf, *arg2);
+        // sema_up(t->filesys_sema_ptr);
+        //printf("\tfile_ptr->inode->sector = %d\n", file_ptr->inode->sector);
+        f->eax = inode_write_at(file_ptr->inode, buf, *arg2, file_ptr->pos);
       }
   		break;
 
@@ -462,7 +491,7 @@ syscall_handler (struct intr_frame *f UNUSED)
       if (debug_fs) printf("\tcurrent dir inumber = %d\n", t->current_directory);
       dir = dir_open(temp_inode);
       if (debug_fs) printf("\tdir->inode->sector = %d\n", dir->inode->sector);
-      inode = get_last_inode(*arg0, dir, last_file);
+      inode = get_last_inode(*arg0, last_file);
       dir_close(dir);
       if (inode != NULL)
       {
@@ -480,7 +509,7 @@ syscall_handler (struct intr_frame *f UNUSED)
       temp_inode = inode_open(t->current_directory);
       // if (debug_fs) printf("\tcurrent dir inumber = %d\n", t->current_directory);
       dir = dir_open(temp_inode);
-      inode = get_last_inode(*arg0, dir, last_file);
+      inode = get_last_inode(*arg0, last_file);
       //if (debug_fs) printf("\tlast_file = %s\n", last_file);
       if (inode == NULL)
       {

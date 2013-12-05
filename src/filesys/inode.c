@@ -422,9 +422,9 @@ inode_remove (struct inode *inode)
 off_t
 inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset) 
 {
-  //if (debug_fs) printf("inode_read_at(): inode_number = %d, file_length = %d\n", inode->sector, inode->data.length);
-  //if (debug_fs) printf("inode_read_at(): read_size = %d, offset = %d\n", size, offset);
-  //if (debug_fs) printf("\tinode->data.data_sectors[0] = %d\n", inode->data.data_sectors[0]);
+  if (debug_fs) printf("inode_read_at(): inode_number = %d, file_length = %d\n", inode->sector, inode->data.length);
+  if (debug_fs) printf("inode_read_at(): read_size = %d, offset = %d\n", size, offset);
+  if (debug_fs) printf("\tinode->data.data_sectors[0] = %d\n", inode->data.data_sectors[0]);
 
   uint8_t *buffer = buffer_;
   off_t bytes_read = 0;
@@ -505,9 +505,9 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
   off_t bytes_written = 0;
   uint8_t *bounce = NULL;
 
-  //if (debug_fs) printf("inode_write_at(): inode_number = %d, file_length = %d\n", inode->sector, inode->data.length);
-  //if (debug_fs) printf("inode_write_at(): write_size = %d, offset = %d\n", size, offset);
-  //if (debug_fs) printf("\tinode->data.data_sectors[0] = %d\n", inode->data.data_sectors[0]);
+  if (debug_fs) printf("inode_write_at(): inode_number = %d, file_length = %d\n", inode->sector, inode->data.length);
+  if (debug_fs) printf("inode_write_at(): write_size = %d, offset = %d\n", size, offset);
+  if (debug_fs) printf("\tinode->data.data_sectors[0] = %d\n", inode->data.data_sectors[0]);
 
   if (inode->data.length < offset + size)
   {
@@ -601,7 +601,7 @@ static bool extend_inode(struct inode *inode, off_t size, off_t offset)
     else
       sectors_needed = bytes_to_sectors(bytes_needed - eof_sector_left);
 
-    int new_length_sectors = bytes_to_sectors(inode->data.length) + sectors_needed; /* New length of file in sectors */
+    int new_length_sectors = bytes_to_sectors(inode->data.length) + sectors_needed + 1; /* New length of file in sectors */
     int direct_blocks = DIRECT_ENTRIES;
     int indirect_blocks = INDEX_BLOCK_ENTRIES;
     int doubly_indirect_blocks = 16384;
