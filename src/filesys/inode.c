@@ -589,7 +589,7 @@ static bool extend_inode(struct inode *inode, off_t size, off_t offset)
   lock_acquire(&extend_lock);
 
   /* Case 1: starting before EOF, but writing past it */
-  if (offset <= inode->data.length)
+  if (true)//(offset <= inode->data.length)
   {
     int eof_sector_ofs = inode->data.length % BLOCK_SECTOR_SIZE;
     int eof_sector_left = BLOCK_SECTOR_SIZE - eof_sector_ofs;
@@ -603,7 +603,7 @@ static bool extend_inode(struct inode *inode, off_t size, off_t offset)
     else
       sectors_needed = bytes_to_sectors(bytes_needed - eof_sector_left);
 
-    int new_length_sectors = bytes_to_sectors(inode->data.length) + sectors_needed; /* New length of file in sectors */
+    int new_length_sectors = bytes_to_sectors(inode->data.length) + sectors_needed + 1; /* New length of file in sectors */
     int direct_blocks = DIRECT_ENTRIES;
     int indirect_blocks = INDEX_BLOCK_ENTRIES;
     int doubly_indirect_blocks = 16384;
