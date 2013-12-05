@@ -23,6 +23,8 @@ static int is_valid_pointer(int *uaddr);
 
 int debug_fs = 1;
 
+static block_sector_t temp_dir_inumber = 1;
+
 // static void get_file_list(char *filepath, char **file_list)
 // {
 //   char *token, *save_ptr;
@@ -46,7 +48,7 @@ static struct inode *get_last_inode(char *dirline, struct dir *current_dir, char
 
   char *save_ptr, *token;
   struct inode *inode;
-  struct dir *next_dir;
+  struct dir *next_dir = NULL;
   for (token = strtok_r(dirline_cpy, "/", &save_ptr);
         token != NULL;
         token = strtok_r(NULL, "/", &save_ptr))
@@ -78,12 +80,13 @@ static struct inode *get_last_inode(char *dirline, struct dir *current_dir, char
 
     if(dir_lookup(current_dir, token, &inode))
     {
-      printf("\t Found %s in current directory\n", token);
+      if(debug_fs) printf("\t\tFound %s in current directory\n", token);
       if(inode->data.is_directory)
       {
         next_dir = dir_open(inode);
         dir_close(current_dir);
         current_dir = next_dir;
+        if (debug_fs) printf("\t\tchanged current dir inumber to %d and dir @ %p\n", current_dir->inode->sector, current_dir);
       }
     }
     else
@@ -93,6 +96,9 @@ static struct inode *get_last_inode(char *dirline, struct dir *current_dir, char
     }
   }
 
+  if (debug_fs) printf("\t\tcurrent dir inumber = %d and dir @ %p\n", current_dir->inode->sector, current_dir);
+  temp_dir_inumber = current_dir->inode->sector;
+  if (debug_fs) printf("\t\ttemp_dir_inumber = %d\n", temp_dir_inumber);
 
   free(dirline_cpy);
   return inode;
@@ -269,16 +275,24 @@ syscall_handler (struct intr_frame *f UNUSED)
       temp_inode = inode_open(t->current_directory);
       if (debug_fs) printf("\tcurrent dir inumber = %d\n", t->current_directory);
       dir = dir_open(temp_inode);
-      printf("\tdir is at %p\n", dir);
+      if (debug_fs) printf("\t!!!dir address before get_last_inode = %p\n", dir);
+      if (debug_fs) printf("\t!!!dir inumber before get_last_inode = %d\n", dir->inode->sector);
       inode = get_last_inode(*arg0, dir, last_file);
+      if (debug_fs) printf("\t!!!dir address after get_last_inode = %p\n", dir);
+      if (debug_fs) printf("\t!!!dir inumber after get_last_inode = %d\n", dir->inode->sector);
       if (inode != NULL)
       {
         f->eax = false;
         break;
       }
 
+      dir_close(dir);
+
+      
       free_map_allocate(1, &new_file_sector);
       inode_create(new_file_sector, 0, 0);
+      temp_inode = inode_open(temp_dir_inumber);
+      dir = dir_open(temp_inode);
       /* Add the file as an entry to it's parent directory */
       success = dir_add(dir, last_file, new_file_sector);
 
@@ -444,8 +458,9 @@ syscall_handler (struct intr_frame *f UNUSED)
 
     case SYS_CHDIR:      
       temp_inode = inode_open(t->current_directory);
-      inode = get_last_inode(*arg0, temp_inode, last_file);
-      inode_close(temp_inode);
+      dir = dir_open(temp_inode);
+      inode = get_last_inode(*arg0, dir, last_file);
+      dir_close(dir);
       if (inode != NULL)
       {
         t->current_directory = inode->sector;
@@ -469,7 +484,7 @@ syscall_handler (struct intr_frame *f UNUSED)
       {
         printf("\t new_file_sector = %d\n", new_file_sector);
         free_map_allocate(1, &new_file_sector);
-        if(dir_create(new_file_sector, 0))
+        if(dir_create(new_file_sector, 16))
         {
           success = dir_add(dir, last_file, new_file_sector);
           dir_close(dir);
