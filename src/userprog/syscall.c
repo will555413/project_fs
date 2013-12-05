@@ -423,7 +423,7 @@ syscall_handler (struct intr_frame *f UNUSED)
         // sema_down(t->filesys_sema_ptr);
         // f->eax = file_read(file_ptr, (void*)*arg1, (off_t)*arg2);
         // sema_up(t->filesys_sema_ptr);
-        f->eax = inode_read_at(file_ptr->inode, (void*)*arg1, (off_t)*arg2, file_ptr->pos);
+        f->eax = file_read(file_ptr, (void*)*arg1, (off_t)*arg2);
       }
       break;
 
@@ -464,7 +464,7 @@ syscall_handler (struct intr_frame *f UNUSED)
         // f->eax = file_write(file_ptr, buf, *arg2);
         // sema_up(t->filesys_sema_ptr);
         //printf("\tfile_ptr->inode->sector = %d\n", file_ptr->inode->sector);
-        f->eax = inode_write_at(file_ptr->inode, buf, *arg2, file_ptr->pos);
+        f->eax = file_write(file_ptr, buf, *arg2);
       }
   		break;
 
