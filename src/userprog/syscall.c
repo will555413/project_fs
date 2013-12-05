@@ -45,9 +45,14 @@ static struct inode *get_last_inode(char *dirline, char *last_file)
 {
   //if (debug_fs) printf("\tget_last_inode(): dirline = %s, cur_dir_inode = %d @ %p\n", dirline, current_dir->inode->sector, current_dir);
   
+  /* Check for absolute or relative */
+  bool absolute = (dirline[0] == '/');
+
   /* Save the sector of the current working directory */
   struct thread *t = thread_current();
   block_sector_t cd_sector = t->current_directory;
+  if (absolute)
+    cd_sector = 1;
 
   /* Make a copy of the dirline argument provided by the user so that we don't modify
       their memory */
@@ -454,7 +459,7 @@ syscall_handler (struct intr_frame *f UNUSED)
           f->eax = 0;
           break;
         }
-        // if (file_ptr->is_dir)
+        // if (file_ptr->inode->data.is_directory == true)
         // {
         //   if (debug_fs) printf("trying to write to a directory\n");
         //   f->eax = -1;
@@ -557,12 +562,57 @@ syscall_handler (struct intr_frame *f UNUSED)
       break;
 
     case SYS_READDIR:                /* Reads a directory entry. */
+      if (*arg0 < 2 || *arg0 > 127)
+      {
+        break;
+      }
+      file_ptr = t->fd_array[*arg0];
+
+      if (file_ptr == NULL)
+      {
+        f->eax = 0;
+        break;
+      }
+
+      if (file_ptr->is_dir == false)
+      {
+        f->eax = 0;
+        break;
+      }
+
+      f->eax = dir_readdir(file_ptr->dir_ptr, *arg1);
       break;
 
     case SYS_ISDIR:                  /* Tests if a fd represents a directory. */
+      if (*arg0 < 2 || *arg0 > 127)
+      {
+        break;
+      }
+      file_ptr = t->fd_array[*arg0];
+
+      if (file_ptr == NULL)
+      {
+        f->eax = -1;
+        break;
+      }
+
+      f->eax = file_ptr->is_dir;
       break;
 
     case SYS_INUMBER:                 /* Returns the inode number for a fd. */
+      if (*arg0 < 2 || *arg0 > 127)
+      {
+        break;
+      }
+      file_ptr = t->fd_array[*arg0];
+
+      if (file_ptr == NULL)
+      {
+        f->eax = -1;
+        break;
+      }
+
+      f->eax = file_ptr->inode->sector;
       break;
 
   	default:

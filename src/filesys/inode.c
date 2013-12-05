@@ -18,6 +18,7 @@ static int debug_fs = 0;
 static int verbose_fs = 0;
 
 static struct lock extend_lock;
+static struct lock write_extend_lock;
 
 static block_sector_t logical_to_physical_idx(struct inode *inode, block_sector_t logical_idx);
 static bool extend_inode(struct inode *inode, off_t size, off_t offset);
@@ -199,6 +200,7 @@ inode_init (void)
   if (verbose_fs) printf("inode_init()\n");
   list_init (&open_inodes);
   lock_init(&extend_lock);
+  lock_init(&write_extend_lock);
 }
 
 /* Initializes an inode with LENGTH bytes of data and
@@ -627,24 +629,7 @@ static bool extend_inode(struct inode *inode, off_t size, off_t offset)
     {
       PANIC("CAN'T GROW BIGGER THAN DISK GO AWAY - DISK GROWING NOT IMPLEMTEND YET THIS ISN'T SPACEFUTURE");
     }
-    // block_sector_t *sector_pointer;
 
-    // if (eof_block_id < 124)
-    // {
-    //   for (i = 0; i < sectors_needed; i++)
-    //   {
-    //     free_map_allocate(1, sector_pointer);
-    //     inode->data.data_sectors[eof_block_id + 1 + i] = *sector_pointer;
-    //     sectors_grown++;
-    //     if ((eof_block_id + 1 + i) = 124)
-    //     {
-    //       sectors_needed -= sectors_grown;
-    //       break;
-    //     }
-    //   }
-    //   eof_block_id += sectors_grown;
-    // }
-    //block_sector_t eof_sector = block_id_to_sector(eof_block_id);
     inode->data.length += bytes_needed;
   }
 
