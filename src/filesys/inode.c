@@ -440,7 +440,7 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
       block_sector_t sector_idx = block_id_to_sector(inode, block_id);
       //if (debug_fs) printf("sector_idx = %d\n", sector_idx);
 
-      if (inode->sector > 2)
+      if (debug_fs && inode->sector > 2)
         printf("\tread_at: inumber = %d, block_id = %d, sector_idx = %d\n", inode->sector, block_id, sector_idx);
 
       if (inode->sector != 0 && sector_idx == 0)

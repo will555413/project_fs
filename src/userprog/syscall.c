@@ -22,7 +22,7 @@
 static void syscall_handler (struct intr_frame *);
 static int is_valid_pointer(int *uaddr);
 
-int debug_fs = 1;
+int debug_fs = 0;
 
 static block_sector_t temp_dir_inumber = 1;
 
@@ -43,6 +43,7 @@ static block_sector_t temp_dir_inumber = 1;
 static struct inode *get_last_inode(char *dirline, struct dir *current_dir, char *last_file)
 {
   if (debug_fs) printf("\tget_last_inode(): dirline = %s, cur_dir_inode = %d @ %p\n", dirline, current_dir->inode->sector, current_dir);
+  int cd_sector = current_dir->inode->sector;
   int dirline_length = strlen(dirline) + 1;
   if (debug_fs) printf("\tcur_dir_inode = %d @ %p\n", current_dir->inode->sector, current_dir);
   char *dirline_cpy = calloc(dirline_length, sizeof(char));
@@ -81,6 +82,9 @@ static struct inode *get_last_inode(char *dirline, struct dir *current_dir, char
     }
 
     if (debug_fs) printf("\t\ttrying to lookup '%s' in the dir = %d @ %p\n", token, current_dir->inode->sector, current_dir);
+    struct inode *temp_inode = inode_open(cd_sector);
+    current_dir = dir_open(temp_inode);
+    if (debug_fs) printf("\t\tFOR REAL trying to lookup '%s' in the dir = %d @ %p\n", token, current_dir->inode->sector, current_dir);
 
     if(dir_lookup(current_dir, token, &inode))
     {
@@ -480,7 +484,6 @@ syscall_handler (struct intr_frame *f UNUSED)
       //if (debug_fs) printf("\tlast_file = %s\n", last_file);
       if (inode == NULL)
       {
-        printf("\t new_file_sector = %d\n", new_file_sector);
         free_map_allocate(1, &new_file_sector);
         if(dir_create(new_file_sector, 16))
         {
