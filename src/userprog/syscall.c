@@ -339,23 +339,27 @@ syscall_handler (struct intr_frame *f UNUSED)
         thread_exit();
       }
 
-      if(t->fd_array[127] != NULL)
+      if(t->fd_array[127] != NULL || strlen(*arg0) == 0)
       {
         f->eax = -1;
         break;
       }
       
-      const char *open_buf = *arg0;
-
+      //const char *open_buf = *arg0;
       // sema_down(t->filesys_sema_ptr);
       // file_ptr = filesys_open(open_buf);
       // sema_up(t->filesys_sema_ptr);
-
 
       temp_inode = inode_open(t->current_directory);
       dir = dir_open(temp_inode);
       inode = get_last_inode(*arg0, last_file);
       dir_close(dir);
+
+      if (inode == NULL)
+      {
+        f->eax = -1;
+        break;
+      }
 
       if (inode->data.is_directory)
         file_ptr = dir_open(inode);
@@ -462,6 +466,7 @@ syscall_handler (struct intr_frame *f UNUSED)
       }
       file_ptr = t->fd_array[*arg0];
       file_seek(file_ptr, *arg1);
+      if (debug_fs) printf("file_seek to %d\n", *arg1);
       break;
 
     case SYS_TELL:
@@ -470,7 +475,8 @@ syscall_handler (struct intr_frame *f UNUSED)
         break;
       }
       file_ptr = t->fd_array[*arg0];
-      file_tell(file_ptr);
+      if (debug_fs) printf("file_tell to %d\n", file_tell(file_ptr));
+      f->eax = file_tell(file_ptr);
       break;
 
     case SYS_CLOSE:
@@ -479,9 +485,20 @@ syscall_handler (struct intr_frame *f UNUSED)
         break;
       }
       file_ptr = t->fd_array[*arg0];
-      sema_down(t->filesys_sema_ptr);
-      file_close(file_ptr);
-      sema_up(t->filesys_sema_ptr);
+      // sema_down(t->filesys_sema_ptr);
+      // file_close(file_ptr);
+      // sema_up(t->filesys_sema_ptr);
+      if (file_ptr == NULL)
+      {
+        f->eax = -1;
+        break;
+      }
+
+      if (file_ptr->inode->data.is_directory)
+        dir_close(file_ptr->inode);
+      else
+        inode_close(file_ptr->inode);
+
       t->fd_array[*arg0] = NULL;
       t->files_closed++;
       break;
@@ -531,6 +548,15 @@ syscall_handler (struct intr_frame *f UNUSED)
         success = false;
 
       f->eax = success;
+      break;
+
+    case SYS_READDIR:                /* Reads a directory entry. */
+      break;
+
+    case SYS_ISDIR:                  /* Tests if a fd represents a directory. */
+      break;
+
+    case SYS_INUMBER:                 /* Returns the inode number for a fd. */
       break;
 
   	default:
