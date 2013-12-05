@@ -46,13 +46,13 @@ static struct inode *get_last_inode(char *dirline, char *last_file)
   //if (debug_fs) printf("\tget_last_inode(): dirline = %s, cur_dir_inode = %d @ %p\n", dirline, current_dir->inode->sector, current_dir);
   
   /* Check for absolute or relative */
-  //bool absolute = (strcmp(*dirline,"/") == 0);
+  bool absolute = (dirline[0] == '/');
 
-  /* Save the sector of the current working directory */
+  /* Set the sector of the current working directory */
   struct thread *t = thread_current();
   block_sector_t cd_sector = t->current_directory;
-  // if (absolute)
-  //   cd_sector = 1;
+  if (absolute)
+    cd_sector = 1;
 
   /* Make a copy of the dirline argument provided by the user so that we don't modify
       their memory */
@@ -72,7 +72,7 @@ static struct inode *get_last_inode(char *dirline, char *last_file)
         token = strtok_r(NULL, "/", &save_ptr))
   {
     strlcpy(last_file, token, strlen(token)+1);
-    if (debug_fs) printf("\t\t token = %s\n", token);
+    if (debug_fs) printf("\t\ttoken = %s\n", token);
     //struct inode *cur_dir_inode = dir_get_inode(current_dir);
     //if (debug_fs) printf("\t\t current_dir_inumber = %s\n", cur_dir_inode->sector);
     if(strcmp(token, ".") == 0)
@@ -103,7 +103,12 @@ static struct inode *get_last_inode(char *dirline, char *last_file)
     if(dir_lookup(current_dir, token, &inode))
     {
       if(debug_fs) printf("\t\tFound %s in current directory\n", token);
-      if(inode->data.is_directory)
+      if (inode->removed)
+      {
+        inode = NULL;
+        break;
+      }
+      else if(inode->data.is_directory)
       {
         next_dir = dir_open(inode);
         cd_sector = next_dir->inode->sector;
@@ -293,11 +298,9 @@ syscall_handler (struct intr_frame *f UNUSED)
     	//   f->eax = filesys_create((char*)*arg0, *arg1);
       //   sema_up(t->filesys_sema_ptr);
       if (debug_fs) printf("\tSYS_CREATE:\n");
-      
-
 
       temp_inode = inode_open(t->current_directory);
-      if (strcmp(*arg0, "/") == 0 && temp_inode->removed)
+      if (arg0[0] != '/' && temp_inode->removed)
       {
         f->eax = 0;
         break;
@@ -346,21 +349,21 @@ syscall_handler (struct intr_frame *f UNUSED)
       if (debug_fs) printf("SYS_REMOVE: %s\n", *arg0);
       if (strcmp(*arg0, "/") == 0)
       {
-        if (debug_fs) printf("special open case of '/', will not close root\n");
+        if (debug_fs) printf("special remove case of '/', fails\n");
         f->eax = 0;
         break;
       }
 
       else if (strcmp(*arg0, ".") == 0)
       {
-        if (debug_fs) printf("special open case of '.', remove cwd\n");
+        if (debug_fs) printf("special remove case of '.', fails\n");
         f->eax = 0;
         break;
       }
 
       else if (strcmp(*arg0, "..") == 0)
       {
-        if (debug_fs) printf("special open case of '..', open cwd's parent\n");
+        if (debug_fs) printf("special open remove of '..', fails\n");
         f->eax = 0;
         break;
       }
@@ -376,6 +379,20 @@ syscall_handler (struct intr_frame *f UNUSED)
         {
           f->eax = 0;
           break;
+        }
+        if (inode->removed || inode->sector == 1)
+        {
+          f->eax = 0;
+          break;
+        }
+        if (inode->data.is_directory == true)
+        {
+          dir = dir_open(inode);
+          if (dir_readdir(dir, last_file))
+          {
+            f->eax = 0;
+            break;
+          }
         }
         inode_remove(inode);
       }
@@ -630,9 +647,21 @@ syscall_handler (struct intr_frame *f UNUSED)
         dir_close(dir);
         if (inode != NULL)
         {
-          t->current_directory = inode->sector;
-          //inode_close(inode);
-          success = true;
+          if (inode->removed)
+          {
+            success = false;
+            break;
+          }
+          else
+          {
+            t->current_directory = inode->sector;
+            inode_close(inode);
+            success = true;
+          }          
+        }
+        else
+        {
+          success = false;
         }
       }     
       
@@ -642,10 +671,12 @@ syscall_handler (struct intr_frame *f UNUSED)
     case SYS_MKDIR:
       if (debug_fs) printf("\tSYS_MKDIR:\n");
       //success = chop_dirline(*arg0, inode, last_file);
-      temp_inode = inode_open(t->current_directory);
+      //temp_inode = inode_open(t->current_directory);
       // if (debug_fs) printf("\tcurrent dir inumber = %d\n", t->current_directory);
-      dir = dir_open(temp_inode);
+      //dir = dir_open(temp_inode);
       inode = get_last_inode(*arg0, last_file);
+      temp_inode = inode_open(temp_dir_inumber);
+      dir = dir_open(temp_inode);
       //if (debug_fs) printf("\tlast_file = %s\n", last_file);
       if (inode == NULL)
       {
@@ -653,6 +684,9 @@ syscall_handler (struct intr_frame *f UNUSED)
         if(dir_create(new_file_sector, 16))
         {
           success = dir_add(dir, last_file, new_file_sector);
+          inode = inode_open(new_file_sector);
+          inode->data.parent_dir = dir->inode->sector;
+          inode_close(inode);
           dir_close(dir);
 
           if(success == false)
