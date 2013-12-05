@@ -37,8 +37,9 @@ int debug_fs = 1;
 //   }
 // }
 
-static struct inode *get_last_inode(char *dirline, struct dir *current_dir, char *file_name)
+static struct inode *get_last_inode(char *dirline, struct dir *current_dir, char *last_file)
 {
+  printf("\tget_last_inode(): dirline = %s\n", dirline);
   int dirline_length = strlen(dirline) + 1;
   char *dirline_cpy = calloc(dirline_length, sizeof(char));
   strlcpy(dirline_cpy, dirline, dirline_length);
@@ -50,22 +51,34 @@ static struct inode *get_last_inode(char *dirline, struct dir *current_dir, char
         token != NULL;
         token = strtok_r(NULL, "/", &save_ptr))
   {
-    if(strcmp(token, "."))
-      continue;
-
-    if(strcmp(token, ".."))
+    strlcpy(last_file, token, strlen(token)+1);
+    if (debug_fs) printf("\t\t token = %s\n", token);
+    //struct inode *cur_dir_inode = dir_get_inode(current_dir);
+    //if (debug_fs) printf("\t\t current_dir_inumber = %s\n", cur_dir_inode->sector);
+    if(strcmp(token, ".") == 0)
     {
+      if (debug_fs) printf("\t\tdetected \".\", continuing\n");
+      continue;
+    }
+
+    if(strcmp(token, "..") == 0)
+    {
+      if (debug_fs) printf("\t\tdetected \"..\", going up a level\n");
       current_dir = dir_parent(current_dir);
     }
 
     if(strlen(token)>14)
     {
-      if(debug_fs) printf("Directory name is too long\n");
-      return NULL;
+      if(debug_fs) printf("\t\tDirectory name is too long\n");
+      inode = NULL;
+      break;
     }
+
+    if (debug_fs) printf("\t\ttrying to lookup '%s' in the current dir\n", token);
 
     if(dir_lookup(current_dir, token, &inode))
     {
+      printf("\t Found %s in current directory\n", token);
       if(inode->data.is_directory)
       {
         next_dir = dir_open(inode);
@@ -74,9 +87,13 @@ static struct inode *get_last_inode(char *dirline, struct dir *current_dir, char
       }
     }
     else
-      return NULL;
+    {
+      inode = NULL;
+      break;
+    }
   }
-  strlcpy(file_name, token, strlen(token));
+
+
   free(dirline_cpy);
   return inode;
 }
@@ -94,9 +111,13 @@ static int get_last_file(char *dirline, char *last_file)
       token != NULL;
       token = strtok_r(NULL, "/", &save_ptr))
   {
+    // if (debug_fs) printf("\ttoken = %s at %p\n", token, *token);
+    // if (debug_fs) printf("\tsave_ptr = %s at %p\n", (char*)save_ptr, (char**)save_ptr);
     prev_token = token;
   }
-
+  // if (debug_fs) printf("\tdone tokenizing\n");
+  // if (debug_fs) printf("\ttoken = %s at %p\n", token, *token);
+  // if (debug_fs) printf("\tprev_token = %s at %p\n", prev_token, *prev_token);
   strlcpy(last_file, prev_token, strlen(prev_token));
   free(dirline_cpy);
   return strlen(last_file);
@@ -104,7 +125,7 @@ static int get_last_file(char *dirline, char *last_file)
 
 /* Removes last file from dirline and returns inode of the
     new last file */
-static void chop_dirline(char *dirline, struct inode *inode, char *last_file)
+static bool chop_dirline(char *dirline, struct inode *inode, char *last_file)
 {
   struct thread *t = thread_current ();
   struct inode *cur_dir_inode;
@@ -117,11 +138,13 @@ static void chop_dirline(char *dirline, struct inode *inode, char *last_file)
   /* Find index of the '/' before the last file and set to null */
   str_idx = strlen(dirline) - get_last_file(dirline, last_file) - 1;
   dirline[str_idx] = '\0';
-
+  //printf("setting dirline[%d] = null\n", str_idx);
   /* Search current directory (or root) for the new last file,
       and set the provided inode to it's inode */
-  inode = get_last_inode(dirline, cur_dir_inode, file_name);
+  inode = get_last_inode(dirline, cur_dir_inode, last_file);
+  //printf("\tgot last inode\n");
   inode_close(cur_dir_inode);
+  return true;
 }
 
 int is_valid_pointer(int *uaddr)
@@ -159,7 +182,7 @@ syscall_handler (struct intr_frame *f UNUSED)
   char last_file[15];
   // char filepath_copy[256];
   int str_idx;
-  int new_file_sector = -1;
+  block_sector_t new_file_sector = -1;
   // char *file_list[32];
 
   int fd = 2;
@@ -241,20 +264,23 @@ syscall_handler (struct intr_frame *f UNUSED)
       //   sema_down(t->filesys_sema_ptr);
     	//   f->eax = filesys_create((char*)*arg0, *arg1);
       //   sema_up(t->filesys_sema_ptr);
-      // strlcpy(filepath_copy, *arg0, strlen(*arg0));
-      // get_file_list(filepath_copy, file_list);
-      chop_dirline(*arg0, inode, last_file);
+      if (debug_fs) printf("\tSYS_CREATE:\n");
+      //success = chop_dirline(*arg0, inode, last_file);
+      temp_inode = inode_open(t->current_directory);
+      if (debug_fs) printf("\tcurrent dir inumber = %d\n", t->current_directory);
+      dir = dir_open(temp_inode);
+      printf("\tdir is at %p\n", dir);
+      inode = get_last_inode(*arg0, dir, last_file);
+      if (inode != NULL)
+      {
+        f->eax = false;
+        break;
+      }
+
       free_map_allocate(1, &new_file_sector);
       inode_create(new_file_sector, 0, 0);
-      temp_inode = inode_open(new_file_sector);
-      temp_inode->data.parent_dir = inode->sector;
-      block_write(fs_device, temp_inode->sector, &temp_inode->data);
-      inode_close(temp_inode);
-
       /* Add the file as an entry to it's parent directory */
-      dir = dir_open(inode);
-      success = dir_add(dir, new_file_sector, file_name);
-      dir_close(inode);
+      success = dir_add(dir, last_file, new_file_sector);
 
       f->eax = success;
   		break;
@@ -290,7 +316,7 @@ syscall_handler (struct intr_frame *f UNUSED)
       str_idx = strlen(*arg0) - get_last_file(*arg0, last_file) - 1;
       arg0[str_idx] = '\0';
 
-      inode = get_last_inode(*arg0, temp_inode, file_name);
+      inode = get_last_inode(*arg0, temp_inode, last_file);
       inode_close(temp_inode);
 
 
@@ -418,7 +444,7 @@ syscall_handler (struct intr_frame *f UNUSED)
 
     case SYS_CHDIR:      
       temp_inode = inode_open(t->current_directory);
-      inode = get_last_inode(*arg0, temp_inode, file_name);
+      inode = get_last_inode(*arg0, temp_inode, last_file);
       inode_close(temp_inode);
       if (inode != NULL)
       {
@@ -431,14 +457,21 @@ syscall_handler (struct intr_frame *f UNUSED)
       break;
 
     case SYS_MKDIR:
-      chop_dirline(*arg0, inode, last_file);
-      if (inode != NULL)
+      if (debug_fs) printf("\tSYS_MKDIR:\n");
+      //success = chop_dirline(*arg0, inode, last_file);
+      temp_inode = inode_open(t->current_directory);
+      if (debug_fs) printf("\tcurrent dir inumber = %d\n", t->current_directory);
+      dir = dir_open(temp_inode);
+      printf("\tdir is at %p\n", dir);
+      inode = get_last_inode(*arg0, dir, last_file);
+      if (debug_fs) printf("\tlast_file = %s\n", last_file);
+      if (inode == NULL)
       {
+        printf("\t new_file_sector = %d\n", new_file_sector);
         free_map_allocate(1, &new_file_sector);
         if(dir_create(new_file_sector, 0))
         {
-          dir = dir_open(inode);
-          success = dir_add(dir, new_file_sector, last_file);
+          success = dir_add(dir, last_file, new_file_sector);
           dir_close(dir);
 
           if(success == false)
@@ -449,6 +482,8 @@ syscall_handler (struct intr_frame *f UNUSED)
 
         inode_close(inode);
       }
+      else
+        success = false;
 
       f->eax = success;
       break;
