@@ -8,21 +8,6 @@
 #include "threads/malloc.h"
 #include "threads/synch.h"
 
-#define DIRECT_ENTRIES 124
-#define INDEX_BLOCK_ENTRIES 128
-#define DOUBLY_INDIRECT_ENTRIES 16384
-
-/* On-disk inode.
-   Must be exactly BLOCK_SECTOR_SIZE bytes long. */
-struct inode_disk
-  {
-    block_sector_t data_sectors[DIRECT_ENTRIES];   /* Data sectors */
-    block_sector_t index_1;             /* Sector number of indirect index */
-    block_sector_t index_2;             /* Sector number of doubly indirect index */
-    off_t length;                       /* File size in bytes. */
-    int is_directory;
-  };
-
 /* On-disk index, should probably be BLOCK_SECTOR_SIZE bytes long. */
 struct index_block
 {
@@ -44,17 +29,6 @@ bytes_to_sectors (off_t size)
 {
   return DIV_ROUND_UP (size, BLOCK_SECTOR_SIZE);
 }
-
-/* In-memory inode. */
-struct inode 
-  {
-    struct list_elem elem;              /* Element in inode list. */
-    block_sector_t sector;              /* Disk location represented by sector number. */
-    int open_cnt;                       /* Number of openers. */
-    bool removed;                       /* True if deleted, false otherwise. */
-    int deny_write_cnt;                 /* 0: writes ok, >0: deny writes. */
-    struct inode_disk data;             /* Inode content. */
-  };
 
 /* makes sure that at least 'sectors' are allocated to the direct array */
 static void allocate_direct(struct inode_disk *inode_disk, block_sector_t sectors)
@@ -233,7 +207,7 @@ inode_init (void)
    Returns true if successful.
    Returns false if memory or disk allocation fails. */
 bool
-inode_create (block_sector_t sector, off_t length)
+inode_create (block_sector_t sector, off_t length, bool dir)
 {
   if (debug_fs) printf("inode_create(): inumber = %d, length = %d\n", sector, length);
   struct inode_disk *disk_inode = NULL;
@@ -255,6 +229,10 @@ inode_create (block_sector_t sector, off_t length)
         disk_inode->data_sectors[s] = -1;
       disk_inode->index_1 = -1;
       disk_inode->index_2 = -1;
+
+      /* Initilize directory data */
+      disk_inode->is_directory = dir;
+      disk_inode->parent_dir = 1;
 
       size_t sectors = bytes_to_sectors (length);
       //if (debug_fs) printf("sectors = %d\n", sectors);

@@ -11,11 +11,76 @@
 #include <string.h>
 #include "filesys/filesys.h"
 #include "filesys/file.h"
+#include "filesys/free-map.h"
+#include "filesys/directory.h"
+#include "filesys/inode.h"
+#include "devices/block.h"
 #include "devices/shutdown.h"
 #include "devices/timer.h"
 
 static void syscall_handler (struct intr_frame *);
 static int is_valid_pointer(int *uaddr);
+
+int debug_fs = 0;
+
+static struct inode *get_last_inode(char *dirline, struct dir *current_dir, char *file_name)
+{
+  char **save_ptr, *token;
+  struct inode *inode;
+  struct dir *next_dir;
+  for (token = strtok_r(dirline,"/",save_ptr);
+        token != NULL;
+        token = strtok_r(NULL,"/",save_ptr))
+  {
+    if(strcmp(token, "."))
+      continue;
+
+    if(strcmp(token, ".."))
+    {
+      current_dir = dir_parent(current_dir);
+    }
+
+    if(strlen(token)>14)
+    {
+      if(debug_fs) printf("Directory name is too long\n");
+      return NULL;
+    }
+
+    if(dir_lookup(current_dir, token, &inode))
+    {
+      if(inode->data.is_directory)
+      {
+        next_dir = dir_open(inode);
+        dir_close(current_dir);
+        current_dir = next_dir;
+      }
+    }
+    else
+      return NULL;
+  }
+  strlcpy(file_name, token, strlen(token));
+  return inode;
+}
+
+/* Find the last subdirectory provide in dirline and copy it to
+  last_subdir, then return the length of last_subir */
+static int chop_last_subdir(char *dirline, char *last_subdir)
+{
+  int dirline_length = strlen(dirline);
+  char *dirline_cpy = calloc(dirline_length+1, sizeof(char));
+  strlcpy(dirline_cpy, dirline, dirline_length);
+  char **save_ptr, *token, *prev_token;
+  for (token = strtok_r(dirline_cpy,"/",save_ptr);
+      token != NULL;
+      token = strtok_r(NULL,"/",save_ptr))
+  {
+    prev_token = token;
+  }
+
+  strlcpy(last_subdir, prev_token, strlen(prev_token));
+  free(dirline_cpy);
+  return strlen(last_subdir);
+}
 
 int is_valid_pointer(int *uaddr)
 {
@@ -43,6 +108,14 @@ syscall_handler (struct intr_frame *f UNUSED)
 {
   struct thread *t = thread_current ();
   struct file *file_ptr;
+  struct dir *dir;
+  struct inode *inode;
+  struct inode *temp_inode;
+  bool success = false;
+  char file_name[15];
+  char last_subdir[15];
+  int str_idx;
+  int new_dir_sector = -1;
   int fd = 2;
   int *syscall_num_ptr = f->esp;
 
@@ -67,6 +140,14 @@ syscall_handler (struct intr_frame *f UNUSED)
   {
     valid_array[i] = is_valid_pointer(*arg_array[i]);
   }
+
+  // char *dirline = calloc(1, strlen(*arg0));
+  // strlcpy(dirline, *arg0, strlen(*arg0));
+  // char *token;
+  // char *save_ptr;
+  // struct inode *current_dir_inode = inode_open(t->current_directory);
+  // void *dir = dir_open(current_dir_inode);
+  // struct inode **inode;
 
   switch (*syscall_num_ptr)
   {
@@ -137,6 +218,7 @@ syscall_handler (struct intr_frame *f UNUSED)
       }
       
       const char *open_buf = *arg0;
+
       sema_down(t->filesys_sema_ptr);
   		file_ptr = filesys_open(open_buf);
       sema_up(t->filesys_sema_ptr);
@@ -257,77 +339,46 @@ syscall_handler (struct intr_frame *f UNUSED)
       t->files_closed++;
       break;
 
-    case SYS_CHDIR:
-      dirline = *arg0;
-      //f->eax = chdir(dir);
-      for (token = strtok_r(dirline,"/",save_ptr);
-           token != NULL;
-           token = strtok_r(NULL,"/",save_ptr))
+    case SYS_CHDIR:      
+      temp_inode = inode_open(t->current_directory);
+      inode = get_last_inode(*arg0, temp_inode, file_name);
+      if (inode != NULL)
       {
-        if(strcmp(token, "."))
-          continue;
-        if(strcmp(token, ".."))
-        {
-          dir = dir->prev;/*need to work on how to get previous dir*/
-        }
-        if(strlen(token)>14)
-        {
-          if(debug_fs) printf("Directory name is too long\n");
-          f->eax = 0;
-          break;
-        }
-        struct inode **inode;
-        if(dir_lookup (dir/*getting current dir?*/, token, inode))
-        {
-          dir = dir_open(inode);
-        }
-        else
-        {
-          if(debug_fs) printf("Directory not found\n");
-          f->eax = 0;
-          break;
-        }
+        inode_close(temp_inode);
+        t->current_directory = inode->sector;
+        inode_close(inode);
+        success = true;
       }
-      f->eax = 1;
-        
+
+      f->eax = success;
       break;
 
     case SYS_MKDIR:
-      dirline = *arg0;
-      for (token = strtok_r(dirline,"/",save_ptr);
-           token != NULL;
-           token = strtok_r(NULL,"/",save_ptr))
+      temp_inode = inode_open(t->current_directory);
+      str_idx = strlen(*arg0) - chop_last_subdir(*arg0, last_subdir) - 1;
+      arg0[str_idx] = '\0';
+      inode = get_last_inode(*arg0, temp_inode, file_name);
+      if (inode != NULL)
       {
-        if(strcmp(token, "."))
-          continue;
-        if(strcmp(token, ".."))
-        {
-          dir = dir->prev;/*need to work on how to get previous dir*/
-        }
-        if(strlen(token)>14)
-        {
-          if(debug_fs) printf("Directory name is too long\n");
-          f->eax = 0;
-          break;
-        }
-        struct inode **inode;
-        if(dir_lookup (dir/*getting current dir?*/, token, inode))
+        inode_close(temp_inode);
+
+        free_map_allocate(1, &new_dir_sector);
+        if(dir_create(new_dir_sector, 0))
         {
           dir = dir_open(inode);
+          success = dir_add(dir, new_dir_sector, last_subdir);
+          dir_close(dir);
+
+          if(success == false)
+          {
+            free_map_release(new_dir_sector, 1);
+          }
         }
-        else if(strtok_r(NULL,"/",save_ptr)==NULL)
-        {
-          //create a new directory and add it to current directory
-          //Struct dir *dir
-        }
-        else
-        {
-          if(debug_fs) printf("Directory not found\n");
-          f->eax = 0;
-          break;
-        }
+
+        inode_close(inode);
       }
-      f->eax = 1;
+
+      f->eax = success;
       break;
 
   	default:

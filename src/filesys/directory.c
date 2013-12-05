@@ -9,13 +9,6 @@
 static int debug_fs = 0;
 static int verbose_fs = 0;
 
-/* A directory. */
-struct dir 
-  {
-    struct inode *inode;                /* Backing store. */
-    off_t pos;                          /* Current position. */
-  };
-
 /* A single directory entry. */
 struct dir_entry 
   {
@@ -29,9 +22,14 @@ struct dir_entry
 bool
 dir_create (block_sector_t sector, size_t entry_cnt)
 {
-  bool success = inode_create (sector, entry_cnt * sizeof (struct dir_entry));
-
+  bool success = inode_create (sector, entry_cnt * sizeof (struct dir_entry), 1);
   return success;
+}
+
+struct dir *dir_parent(struct dir *dir)
+{
+  struct inode *inode = inode_open(dir->parent);
+  return dir_open(inode);
 }
 
 /* Opens and returns the directory for the given INODE, of which
