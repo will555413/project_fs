@@ -21,16 +21,34 @@
 static void syscall_handler (struct intr_frame *);
 static int is_valid_pointer(int *uaddr);
 
-int debug_fs = 0;
+int debug_fs = 1;
+
+// static void get_file_list(char *filepath, char **file_list)
+// {
+//   char *token, *save_ptr;
+//   int num_files = 0;
+
+//   for (token = strtok_r (filepath, "/", &save_ptr);
+//         token != NULL;
+//         token = strtok_r (NULL, "/", &save_ptr))
+//   {
+//       file_list[num_files] = token;
+//       num_files++;
+//   }
+// }
 
 static struct inode *get_last_inode(char *dirline, struct dir *current_dir, char *file_name)
 {
-  char **save_ptr, *token;
+  int dirline_length = strlen(dirline) + 1;
+  char *dirline_cpy = calloc(dirline_length, sizeof(char));
+  strlcpy(dirline_cpy, dirline, dirline_length);
+
+  char *save_ptr, *token;
   struct inode *inode;
   struct dir *next_dir;
-  for (token = strtok_r(dirline,"/",save_ptr);
+  for (token = strtok_r(dirline_cpy, "/", &save_ptr);
         token != NULL;
-        token = strtok_r(NULL,"/",save_ptr))
+        token = strtok_r(NULL, "/", &save_ptr))
   {
     if(strcmp(token, "."))
       continue;
@@ -59,27 +77,51 @@ static struct inode *get_last_inode(char *dirline, struct dir *current_dir, char
       return NULL;
   }
   strlcpy(file_name, token, strlen(token));
+  free(dirline_cpy);
   return inode;
 }
 
-/* Find the last subdirectory provide in dirline and copy it to
-  last_subdir, then return the length of last_subir */
-static int chop_last_subdir(char *dirline, char *last_subdir)
+/* Find the last file provide in dirline and copy it to
+  last_file, then return the length of last_file */
+static int get_last_file(char *dirline, char *last_file)
 {
-  int dirline_length = strlen(dirline);
-  char *dirline_cpy = calloc(dirline_length+1, sizeof(char));
+  int dirline_length = strlen(dirline) + 1;
+  char *dirline_cpy = calloc(dirline_length, sizeof(char));
   strlcpy(dirline_cpy, dirline, dirline_length);
-  char **save_ptr, *token, *prev_token;
-  for (token = strtok_r(dirline_cpy,"/",save_ptr);
+  char *save_ptr, *token, *prev_token;
+  if (debug_fs) printf("get_last_file(): dirline_cpy = %s at %p\n", dirline_cpy, dirline_cpy);
+  for (token = strtok_r(dirline_cpy, "/", &save_ptr);
       token != NULL;
-      token = strtok_r(NULL,"/",save_ptr))
+      token = strtok_r(NULL, "/", &save_ptr))
   {
     prev_token = token;
   }
 
-  strlcpy(last_subdir, prev_token, strlen(prev_token));
+  strlcpy(last_file, prev_token, strlen(prev_token));
   free(dirline_cpy);
-  return strlen(last_subdir);
+  return strlen(last_file);
+}
+
+/* Removes last file from dirline and returns inode of the
+    new last file */
+static void chop_dirline(char *dirline, struct inode *inode, char *last_file)
+{
+  struct thread *t = thread_current ();
+  struct inode *cur_dir_inode;
+  int str_idx;
+  char file_name[15];
+
+  /* Open inode of this thread's working directory */
+  cur_dir_inode = inode_open(t->current_directory);
+
+  /* Find index of the '/' before the last file and set to null */
+  str_idx = strlen(dirline) - get_last_file(dirline, last_file) - 1;
+  dirline[str_idx] = '\0';
+
+  /* Search current directory (or root) for the new last file,
+      and set the provided inode to it's inode */
+  inode = get_last_inode(dirline, cur_dir_inode, file_name);
+  inode_close(cur_dir_inode);
 }
 
 int is_valid_pointer(int *uaddr)
@@ -111,11 +153,15 @@ syscall_handler (struct intr_frame *f UNUSED)
   struct dir *dir;
   struct inode *inode;
   struct inode *temp_inode;
+
   bool success = false;
   char file_name[15];
-  char last_subdir[15];
+  char last_file[15];
+  // char filepath_copy[256];
   int str_idx;
-  int new_dir_sector = -1;
+  int new_file_sector = -1;
+  // char *file_list[32];
+
   int fd = 2;
   int *syscall_num_ptr = f->esp;
 
@@ -192,9 +238,25 @@ syscall_handler (struct intr_frame *f UNUSED)
   			f->eax = 0;
   			break;
   		}
-      sema_down(t->filesys_sema_ptr);
-  		f->eax = filesys_create((char*)*arg0, *arg1);
-      sema_up(t->filesys_sema_ptr);
+      //   sema_down(t->filesys_sema_ptr);
+    	//   f->eax = filesys_create((char*)*arg0, *arg1);
+      //   sema_up(t->filesys_sema_ptr);
+      // strlcpy(filepath_copy, *arg0, strlen(*arg0));
+      // get_file_list(filepath_copy, file_list);
+      chop_dirline(*arg0, inode, last_file);
+      free_map_allocate(1, &new_file_sector);
+      inode_create(new_file_sector, 0, 0);
+      temp_inode = inode_open(new_file_sector);
+      temp_inode->data.parent_dir = inode->sector;
+      block_write(fs_device, temp_inode->sector, &temp_inode->data);
+      inode_close(temp_inode);
+
+      /* Add the file as an entry to it's parent directory */
+      dir = dir_open(inode);
+      success = dir_add(dir, new_file_sector, file_name);
+      dir_close(inode);
+
+      f->eax = success;
   		break;
 
     case SYS_REMOVE:
@@ -219,9 +281,24 @@ syscall_handler (struct intr_frame *f UNUSED)
       
       const char *open_buf = *arg0;
 
-      sema_down(t->filesys_sema_ptr);
-  		file_ptr = filesys_open(open_buf);
-      sema_up(t->filesys_sema_ptr);
+      //sema_down(t->filesys_sema_ptr);
+      //file_ptr = filesys_open(open_buf);
+      //sema_up(t->filesys_sema_ptr);
+      temp_inode = inode_open(t->current_directory);
+
+
+      str_idx = strlen(*arg0) - get_last_file(*arg0, last_file) - 1;
+      arg0[str_idx] = '\0';
+
+      inode = get_last_inode(*arg0, temp_inode, file_name);
+      inode_close(temp_inode);
+
+
+      if (inode->data.is_directory)
+        file_ptr = dir_open(inode);
+      else
+        file_ptr = file_open(inode);
+
   		if (file_ptr == NULL)
   		{
   			f->eax = -1;
@@ -342,9 +419,9 @@ syscall_handler (struct intr_frame *f UNUSED)
     case SYS_CHDIR:      
       temp_inode = inode_open(t->current_directory);
       inode = get_last_inode(*arg0, temp_inode, file_name);
+      inode_close(temp_inode);
       if (inode != NULL)
       {
-        inode_close(temp_inode);
         t->current_directory = inode->sector;
         inode_close(inode);
         success = true;
@@ -354,24 +431,19 @@ syscall_handler (struct intr_frame *f UNUSED)
       break;
 
     case SYS_MKDIR:
-      temp_inode = inode_open(t->current_directory);
-      str_idx = strlen(*arg0) - chop_last_subdir(*arg0, last_subdir) - 1;
-      arg0[str_idx] = '\0';
-      inode = get_last_inode(*arg0, temp_inode, file_name);
+      chop_dirline(*arg0, inode, last_file);
       if (inode != NULL)
       {
-        inode_close(temp_inode);
-
-        free_map_allocate(1, &new_dir_sector);
-        if(dir_create(new_dir_sector, 0))
+        free_map_allocate(1, &new_file_sector);
+        if(dir_create(new_file_sector, 0))
         {
           dir = dir_open(inode);
-          success = dir_add(dir, new_dir_sector, last_subdir);
+          success = dir_add(dir, new_file_sector, last_file);
           dir_close(dir);
 
           if(success == false)
           {
-            free_map_release(new_dir_sector, 1);
+            free_map_release(new_file_sector, 1);
           }
         }
 
