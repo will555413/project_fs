@@ -20,7 +20,7 @@
 #include "threads/synch.h"
 #include "devices/timer.h"
 
-#define MAX_PROCESSES 4098
+#define MAX_PROCESSES 1024
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
