@@ -565,6 +565,12 @@ syscall_handler (struct intr_frame *f UNUSED)
           f->eax = 0;
           break;
         }
+        if(file_ptr->inode->data.is_directory)
+        {
+          if(debug_fs) printf("\tCan't write to directory\n");
+          f->eax=-1;
+          break;
+        }
         // if (file_ptr->inode->data.is_directory == true)
         // {
         //   if (debug_fs) printf("trying to write to a directory\n");
