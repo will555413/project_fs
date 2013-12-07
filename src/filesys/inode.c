@@ -448,7 +448,7 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
       if (inode->sector != 0 && sector_idx == 0)
         PANIC("ERMAGER");
       if (sector_idx > 4*4096)
-        PANIC("Got bad sector id for inode data table");
+        return bytes_read;
 
       int sector_ofs = offset % BLOCK_SECTOR_SIZE;
       //if (debug_fs) printf("sector_ofs = %d\n", sector_ofs);
@@ -532,7 +532,7 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
       if (inode->sector != 0 && sector_idx == 0)
         PANIC("ERMAGER");
       if (sector_idx > 4*4096)
-        PANIC("Got bad sector id for inode data table");
+        return bytes_written;
 
       int sector_ofs = offset % BLOCK_SECTOR_SIZE;
 

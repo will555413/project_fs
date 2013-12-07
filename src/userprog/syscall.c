@@ -216,6 +216,7 @@ syscall_handler (struct intr_frame *f UNUSED)
 
   bool success = false;
   char last_file[15];
+  char temp_fn[15];
   block_sector_t new_file_sector = -1;
 
   int fd = 2;
@@ -370,30 +371,39 @@ syscall_handler (struct intr_frame *f UNUSED)
 
       else
       {
-        temp_inode = inode_open(t->current_directory);
-        dir = dir_open(temp_inode);
+        //temp_inode = inode_open(t->current_directory);
+        //dir = dir_open(temp_inode);
         inode = get_last_inode(*arg0, last_file);
-        dir_close(dir);
+        //dir_close(dir);
 
         if (inode == NULL)
         {
+          if (debug_fs) printf("\tSYS_REMOVE: inode ==  NULL fail\n");
           f->eax = 0;
           break;
         }
         if (inode->removed || inode->sector == 1)
         {
+          if (debug_fs) printf("\tSYS_REMOVE: inode already removed or is rood\n");
           f->eax = 0;
           break;
         }
         if (inode->data.is_directory == true)
         {
           dir = dir_open(inode);
-          if (dir_readdir(dir, last_file))
+          if (debug_fs) printf("\tSYS_REMOVE: opened directory at inumber = %d\n", inode->sector);
+          if (dir_readdir(dir, temp_fn) != false)
           {
+            if (debug_fs) printf("\tSYS_REMOVE: trying to remove non-empty dir, (found '%s')\n", temp_fn);
+            dir_close(dir);
             f->eax = 0;
             break;
-          }
+          }         
         }
+        temp_inode = inode_open(inode->data.parent_dir);
+        dir = dir_open(temp_inode);
+        dir_remove(dir, last_file);
+        dir_close(dir);
         inode_remove(inode);
       }
 
