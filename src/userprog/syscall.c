@@ -324,7 +324,11 @@ syscall_handler (struct intr_frame *f UNUSED)
 
       
       free_map_allocate(1, &new_file_sector);
-      inode_create(new_file_sector, *arg1, 0);
+      if(inode_create(new_file_sector, *arg1, 0) == false)
+      {
+        f->eax = false;
+        break;
+      }
       temp_inode = inode_open(temp_dir_inumber);
       dir = dir_open(temp_inode);
       /* Add the file as an entry to it's parent directory */

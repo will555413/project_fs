@@ -5,6 +5,7 @@
 #include "filesys/filesys.h"
 #include "filesys/inode.h"
 #include "threads/malloc.h"
+#include "threads/synch.h"
 
 static int debug_fs = 0;
 static int verbose_fs = 0;
@@ -42,6 +43,7 @@ dir_open (struct inode *inode)
   if (inode != NULL && dir != NULL)
     {
       dir->inode = inode;
+      sema_init(&dir->dir_sema, 1);
       dir->pos = 0;
       return dir;
     }
@@ -147,6 +149,7 @@ dir_lookup (const struct dir *dir, const char *name,
 bool
 dir_add (struct dir *dir, const char *name, block_sector_t inode_sector)
 {
+  sema_down(&dir->dir_sema);
   if (debug_fs) printf("dir_add(): name = %s, inode_sector = %d\n", name, inode_sector);
   struct dir_entry e;
   off_t ofs;
@@ -182,6 +185,7 @@ dir_add (struct dir *dir, const char *name, block_sector_t inode_sector)
   success = inode_write_at (dir->inode, &e, sizeof e, ofs) == sizeof e;
 
  done:
+  sema_up(&dir->dir_sema);
   return success;
 }
 
@@ -191,6 +195,7 @@ dir_add (struct dir *dir, const char *name, block_sector_t inode_sector)
 bool
 dir_remove (struct dir *dir, const char *name) 
 {
+  sema_down(&dir->dir_sema);
   struct dir_entry e;
   struct inode *inode = NULL;
   bool success = false;
@@ -219,6 +224,7 @@ dir_remove (struct dir *dir, const char *name)
 
  done:
   inode_close (inode);
+  sema_up(&dir->dir_sema);
   return success;
 }
 

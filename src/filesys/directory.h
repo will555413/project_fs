@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include "devices/block.h"
 #include "filesys/off_t.h"
+#include "threads/synch.h"
 
 /* Maximum length of a file name component.
    This is the traditional UNIX maximum length.
@@ -18,7 +19,8 @@ struct inode;
 struct dir 
   {
     struct inode *inode;                /* Backing store. */
-    block_sector_t *parent;             /* This is '..' */
+    block_sector_t *parent;             /* This is '..' */				
+    struct semaphore dir_sema;			/* Used to lock dir_add and dir_ remove */
     off_t pos;                          /* Current position. */
   };
 

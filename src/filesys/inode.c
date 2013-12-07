@@ -18,7 +18,7 @@ static int debug_fs = 0;
 static int verbose_fs = 0;
 
 static struct lock extend_lock;
-static struct lock write_extend_lock;
+//static struct lock write_extend_lock;
 
 static block_sector_t logical_to_physical_idx(struct inode *inode, block_sector_t logical_idx);
 static bool extend_inode(struct inode *inode, off_t size, off_t offset);
@@ -200,7 +200,6 @@ inode_init (void)
   if (verbose_fs) printf("inode_init()\n");
   list_init (&open_inodes);
   lock_init(&extend_lock);
-  lock_init(&write_extend_lock);
 }
 
 /* Initializes an inode with LENGTH bytes of data and
@@ -214,7 +213,8 @@ inode_create (block_sector_t sector, off_t length, bool dir)
   if (debug_fs) printf("inode_create(): inumber = %d, length = %d\n", sector, length);
   struct inode_disk *disk_inode = NULL;
   bool success = false;
-
+  if (sector == -1)
+    return false;
   ASSERT (length >= 0);
 
   /* If this assertion fails, the inode structure is not exactly
@@ -349,6 +349,7 @@ inode_open (block_sector_t sector)
   inode->open_cnt = 1;
   inode->deny_write_cnt = 0;
   inode->removed = false;
+  lock_init(&inode->write_extend_lock);
   block_read (fs_device, inode->sector, &inode->data);
   if (debug_fs) printf("\tinode->data.data_sectors[0] = %d\n", inode->data.data_sectors[0]);
   return inode;
@@ -424,9 +425,9 @@ inode_remove (struct inode *inode)
 off_t
 inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset) 
 {
-  if (debug_fs) printf("inode_read_at(): inode_number = %d, file_length = %d\n", inode->sector, inode->data.length);
-  if (debug_fs) printf("inode_read_at(): read_size = %d, offset = %d\n", size, offset);
-  if (debug_fs) printf("\tinode->data.data_sectors[0] = %d\n", inode->data.data_sectors[0]);
+  // if (debug_fs) printf("inode_read_at(): inode_number = %d, file_length = %d\n", inode->sector, inode->data.length);
+  // if (debug_fs) printf("inode_read_at(): read_size = %d, offset = %d\n", size, offset);
+  // if (debug_fs) printf("\tinode->data.data_sectors[0] = %d\n", inode->data.data_sectors[0]);
 
   uint8_t *buffer = buffer_;
   off_t bytes_read = 0;
@@ -447,7 +448,7 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
 
       if (inode->sector != 0 && sector_idx == 0)
         PANIC("ERMAGER");
-      if (sector_idx > 4*4096)
+      if (sector_idx >= 4*4096)
         return bytes_read;
 
       int sector_ofs = offset % BLOCK_SECTOR_SIZE;
@@ -507,9 +508,9 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
   off_t bytes_written = 0;
   uint8_t *bounce = NULL;
 
-  if (debug_fs) printf("inode_write_at(): inode_number = %d, file_length = %d\n", inode->sector, inode->data.length);
-  if (debug_fs) printf("inode_write_at(): write_size = %d, offset = %d\n", size, offset);
-  if (debug_fs) printf("\tinode->data.data_sectors[0] = %d\n", inode->data.data_sectors[0]);
+  // if (debug_fs) printf("inode_write_at(): inode_number = %d, file_length = %d\n", inode->sector, inode->data.length);
+  // if (debug_fs) printf("inode_write_at(): write_size = %d, offset = %d\n", size, offset);
+  // if (debug_fs) printf("\tinode->data.data_sectors[0] = %d\n", inode->data.data_sectors[0]);
 
   if (inode->data.length < offset + size)
   {
@@ -531,7 +532,7 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
 
       if (inode->sector != 0 && sector_idx == 0)
         PANIC("ERMAGER");
-      if (sector_idx > 4*4096)
+      if (sector_idx >= 4*4096)
         return bytes_written;
 
       int sector_ofs = offset % BLOCK_SECTOR_SIZE;
@@ -589,55 +590,55 @@ static bool extend_inode(struct inode *inode, off_t size, off_t offset)
   lock_acquire(&extend_lock);
 
   /* Case 1: starting before EOF, but writing past it */
-  if (true)//(offset <= inode->data.length)
+  // if (true)//(offset <= inode->data.length)
+  // {
+  int eof_sector_ofs = inode->data.length % BLOCK_SECTOR_SIZE;
+  int eof_sector_left = BLOCK_SECTOR_SIZE - eof_sector_ofs;
+
+  off_t bytes_needed = (offset + size) - inode->data.length;
+  off_t sectors_needed;
+  off_t sectors_grown = 0;
+
+  if (bytes_needed - eof_sector_left <= 0)
+    sectors_needed = 0;
+  else
+    sectors_needed = bytes_to_sectors(bytes_needed - eof_sector_left);
+
+  int new_length_sectors = bytes_to_sectors(inode->data.length) + sectors_needed + 1; /* New length of file in sectors */
+  int direct_blocks = DIRECT_ENTRIES;
+  int indirect_blocks = INDEX_BLOCK_ENTRIES;
+  int doubly_indirect_blocks = 16384;
+  int total_blocks = direct_blocks + indirect_blocks + doubly_indirect_blocks; /* 16637 */
+
+  if (debug_fs) printf("\tnew_length_sectors = %d\n", new_length_sectors);
+  if (new_length_sectors <= direct_blocks)
   {
-    int eof_sector_ofs = inode->data.length % BLOCK_SECTOR_SIZE;
-    int eof_sector_left = BLOCK_SECTOR_SIZE - eof_sector_ofs;
-
-    off_t bytes_needed = (offset + size) - inode->data.length;
-    off_t sectors_needed;
-    off_t sectors_grown = 0;
-
-    if (bytes_needed - eof_sector_left <= 0)
-      sectors_needed = 0;
-    else
-      sectors_needed = bytes_to_sectors(bytes_needed - eof_sector_left);
-
-    int new_length_sectors = bytes_to_sectors(inode->data.length) + sectors_needed + 1; /* New length of file in sectors */
-    int direct_blocks = DIRECT_ENTRIES;
-    int indirect_blocks = INDEX_BLOCK_ENTRIES;
-    int doubly_indirect_blocks = 16384;
-    int total_blocks = direct_blocks + indirect_blocks + doubly_indirect_blocks; /* 16637 */
-
-    if (debug_fs) printf("\tnew_length_sectors = %d\n", new_length_sectors);
-    if (new_length_sectors <= direct_blocks)
-    {
-      allocate_direct(&inode->data, new_length_sectors);
-    }
-    else if (new_length_sectors <= direct_blocks + indirect_blocks)
-    {
-      allocate_direct(&inode->data, DIRECT_ENTRIES);
-      allocate_indirect(&inode->data, new_length_sectors - direct_blocks);
-    }
-    else if (new_length_sectors <= total_blocks)
-    {
-      allocate_direct(&inode->data, DIRECT_ENTRIES);
-      allocate_indirect(&inode->data, INDEX_BLOCK_ENTRIES);
-      allocate_doubly_indirect(&inode->data, new_length_sectors - indirect_blocks - direct_blocks);
-    }
-    else
-    {
-      PANIC("CAN'T GROW BIGGER THAN DISK GO AWAY - DISK GROWING NOT IMPLEMTEND YET THIS ISN'T SPACEFUTURE");
-    }
-
-    inode->data.length += bytes_needed;
+    allocate_direct(&inode->data, new_length_sectors);
   }
-
-  /* Case 2: starting after EOF */
+  else if (new_length_sectors <= direct_blocks + indirect_blocks)
+  {
+    allocate_direct(&inode->data, DIRECT_ENTRIES);
+    allocate_indirect(&inode->data, new_length_sectors - direct_blocks);
+  }
+  else if (new_length_sectors <= total_blocks)
+  {
+    allocate_direct(&inode->data, DIRECT_ENTRIES);
+    allocate_indirect(&inode->data, INDEX_BLOCK_ENTRIES);
+    allocate_doubly_indirect(&inode->data, new_length_sectors - indirect_blocks - direct_blocks);
+  }
   else
   {
-    printf("case 2\n");
+    PANIC("CAN'T GROW BIGGER THAN DISK GO AWAY - DISK GROWING NOT IMPLEMTEND YET THIS ISN'T SPACEFUTURE");
   }
+
+  inode->data.length += bytes_needed;
+  // }
+
+  // /* Case 2: starting after EOF */
+  // else
+  // {
+  //   printf("case 2\n");
+  // }
 
   lock_release(&extend_lock);
   return true;
